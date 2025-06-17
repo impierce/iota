@@ -213,7 +213,7 @@ impl IotaClientBuilder {
         self
     }
 
-    // Set a custom TLS configuration for the HTTP client.
+    /// Set a custom TLS configuration for the HTTP client.
     pub fn custom_tls_config(mut self, config: rustls::ClientConfig) -> Self {
         self.custom_tls_config = Some(config);
         self
