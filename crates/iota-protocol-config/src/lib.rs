@@ -276,11 +276,6 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     consensus_zstd_compression: bool,
 
-    // To enable/disable the gas price feedback mechanism used for transactions
-    // cancelled due to shared object congestion
-    #[serde(skip_serializing_if = "is_false")]
-    congested_objects_gas_price_feedback_mechanism: bool,
-
     // Use the minimum free execution slot to schedule execution of a transaction in the shared
     // object congestion tracker.
     #[serde(skip_serializing_if = "is_false")]
@@ -293,6 +288,11 @@ struct FeatureFlags {
     // If true, enabled batched block sync in consensus.
     #[serde(skip_serializing_if = "is_false")]
     consensus_batched_block_sync: bool,
+
+    // To enable/disable the gas price feedback mechanism used for transactions
+    // cancelled due to shared object congestion
+    #[serde(skip_serializing_if = "is_false")]
+    congested_objects_gas_price_feedback_mechanism: bool,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -1257,13 +1257,6 @@ impl ProtocolConfig {
         self.feature_flags.consensus_zstd_compression
     }
 
-    /// Check if the gas price feedback mechanism (which is used for
-    /// transactions cancelled due to shared object congestion) is enabled
-    pub fn congested_objects_gas_price_feedback_mechanism(&self) -> bool {
-        self.feature_flags
-            .congested_objects_gas_price_feedback_mechanism
-    }
-
     pub fn congestion_control_min_free_execution_slot(&self) -> bool {
         self.feature_flags
             .congestion_control_min_free_execution_slot
@@ -1275,6 +1268,13 @@ impl ProtocolConfig {
 
     pub fn consensus_batched_block_sync(&self) -> bool {
         self.feature_flags.consensus_batched_block_sync
+    }
+
+    /// Check if the gas price feedback mechanism (which is used for
+    /// transactions cancelled due to shared object congestion) is enabled
+    pub fn congested_objects_gas_price_feedback_mechanism(&self) -> bool {
+        self.feature_flags
+            .congested_objects_gas_price_feedback_mechanism
     }
 }
 
