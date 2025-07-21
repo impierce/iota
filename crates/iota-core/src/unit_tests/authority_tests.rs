@@ -6160,6 +6160,7 @@ async fn test_consensus_handler_congestion_control_transaction_cancellation() {
     let mut certificates: Vec<VerifiedCertificate> = vec![];
     let gas_price_of_non_cancelled_txs = 2_000;
     let gas_price_of_cancelled_txs = 1_000;
+    let suggested_gas_price = gas_price_of_non_cancelled_txs + 1;
 
     // Create 3 transactions that operate on shared_objects[0]. These transactions
     // will go through eventually.
@@ -6252,11 +6253,11 @@ async fn test_consensus_handler_congestion_control_transaction_cancellation() {
         [
             (
                 shared_objects[0].id(),
-                SequenceNumber::new_congested_with_suggested_gas_price(gas_price_of_cancelled_txs)
+                SequenceNumber::new_congested_with_suggested_gas_price(suggested_gas_price)
             ),
             (
                 shared_objects[1].id(),
-                SequenceNumber::new_congested_with_suggested_gas_price(gas_price_of_cancelled_txs)
+                SequenceNumber::new_congested_with_suggested_gas_price(suggested_gas_price)
             )
         ]
         .into_iter()
@@ -6290,11 +6291,11 @@ async fn test_consensus_handler_congestion_control_transaction_cancellation() {
         vec![
             SharedInput::Cancelled((
                 shared_objects[0].id(),
-                SequenceNumber::new_congested_with_suggested_gas_price(gas_price_of_cancelled_txs)
+                SequenceNumber::new_congested_with_suggested_gas_price(suggested_gas_price)
             )),
             SharedInput::Cancelled((
                 shared_objects[1].id(),
-                SequenceNumber::new_congested_with_suggested_gas_price(gas_price_of_cancelled_txs)
+                SequenceNumber::new_congested_with_suggested_gas_price(suggested_gas_price)
             ))
         ]
     );
@@ -6307,7 +6308,7 @@ async fn test_consensus_handler_congestion_control_transaction_cancellation() {
     );
     assert_eq!(
         cancellation_reason,
-        SequenceNumber::new_congested_with_suggested_gas_price(gas_price_of_cancelled_txs)
+        SequenceNumber::new_congested_with_suggested_gas_price(suggested_gas_price)
     );
 
     // Consensus commit prologue contains cancelled txn shared object version
@@ -6324,13 +6325,13 @@ async fn test_consensus_handler_congestion_control_transaction_cancellation() {
                     (
                         shared_objects[0].id(),
                         SequenceNumber::new_congested_with_suggested_gas_price(
-                            gas_price_of_cancelled_txs
+                            suggested_gas_price
                         ),
                     ),
                     (
                         shared_objects[1].id(),
                         SequenceNumber::new_congested_with_suggested_gas_price(
-                            gas_price_of_cancelled_txs
+                            suggested_gas_price
                         ),
                     )
                 ]
