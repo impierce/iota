@@ -29,7 +29,10 @@ mod test {
             workload_configuration::{WorkloadConfig, WorkloadConfiguration, WorkloadWeights},
         },
     };
-    use iota_config::{AUTHORITIES_DB_NAME, IOTA_KEYSTORE_FILENAME, node::AuthorityOverloadConfig};
+    use iota_config::{
+        AUTHORITIES_DB_NAME, ExecutionCacheConfig, ExecutionCacheType, IOTA_KEYSTORE_FILENAME,
+        node::AuthorityOverloadConfig,
+    };
     use iota_core::{
         authority::{
             AuthorityState, authority_store_tables::AuthorityPerpetualTables, framework_injection,
@@ -857,6 +860,48 @@ mod test {
         });
 
         test_simulated_load(test_cluster, 60).await
+    }
+
+    #[sim_test(config = "test_config()")]
+    async fn test_backpressure() {
+        iota_protocol_config::ProtocolConfig::poison_get_for_min_version();
+
+        let mut cache_config: ExecutionCacheConfig = Default::default();
+        // make sure we don't halt even with absurdly low backpressure threshold
+        // To validate this, change
+        // backpressure::Watermarks::is_backpressure_suppressed() to
+        // always return false and verify the test fails.
+        cache_config.writeback_cache.backpressure_threshold = Some(1);
+
+        // for the tests to pass we still need to be able to submit transactions
+        // during backpressure.
+        cache_config.writeback_cache.backpressure_threshold_for_rpc = Some(10000);
+
+        let test_cluster = init_test_cluster_builder(4, 10000)
+            .with_authority_overload_config(AuthorityOverloadConfig {
+                // Disable system overload checks for the test - during tests with crashes,
+                // it is possible for overload protection to trigger due to validators
+                // having queued certs which are missing dependencies.
+                check_system_overload_at_execution: false,
+                check_system_overload_at_signing: false,
+                max_txn_age_in_queue: Duration::from_secs(10000),
+                max_transaction_manager_queue_length: 10000,
+                max_transaction_manager_per_object_queue_length: 10000,
+                ..Default::default()
+            })
+            .with_execution_cache_type(ExecutionCacheType::WritebackCache)
+            .with_execution_cache_config(cache_config)
+            .with_submit_delay_step_override_millis(3000)
+            .build()
+            .await
+            .into();
+
+        tokio::time::timeout(
+            Duration::from_secs(120),
+            test_simulated_load(test_cluster, 60),
+        )
+        .await
+        .expect("test_backpressure timed out");
     }
 
     fn handle_bool_failpoint(
