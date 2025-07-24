@@ -1660,17 +1660,41 @@ impl IotaClientCommands {
                 match (amounts.as_ref(), count) {
                     (None, None) => bail!("You must use one of amounts or count options."),
                     (Some(_), Some(_)) => bail!("Cannot specify both amounts and count."),
-                    (None, Some(0)) => bail!("Coin split count must be greater than 0"),
+                    (None, Some(0)) | (None, Some(1)) => {
+                        bail!("Coin split count must be greater than 1.")
+                    }
                     _ => { /*no_op*/ }
                 }
 
                 let client = context.get_client().await?;
                 let signer = context.get_object_owner(&coin_id).await?;
-
-                let tx_kind = client
-                    .transaction_builder()
-                    .split_coin_tx_kind(coin_id, amounts, count)
+                let gas_coins_page = client
+                    .coin_read_api()
+                    .get_coins(signer, None, None, None)
                     .await?;
+                // If we only have a single coin, we have to split from the gas coin
+                let tx_kind = if gas_coins_page.data.len() == 1 {
+                    if let Some(amounts) = amounts {
+                        client
+                            .transaction_builder()
+                            .pay_iota_tx_kind(vec![signer; amounts.len()], amounts)?
+                    } else if let Some(count_to_compute) = count {
+                        let amount = gas_coins_page.data[0].balance / count_to_compute;
+                        // Reduce by 1 as the gas coin is not included in the split
+                        let count_to_split = count_to_compute.saturating_sub(1);
+                        client.transaction_builder().pay_iota_tx_kind(
+                            vec![signer; count_to_split as usize],
+                            vec![amount; count_to_split as usize],
+                        )?
+                    } else {
+                        unreachable!("amount or count must be provided")
+                    }
+                } else {
+                    client
+                        .transaction_builder()
+                        .split_coin_tx_kind(coin_id, amounts, count)
+                        .await?
+                };
 
                 let gas_payment = client
                     .transaction_builder()
