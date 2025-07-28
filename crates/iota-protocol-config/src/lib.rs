@@ -292,7 +292,7 @@ struct FeatureFlags {
     // To enable/disable the gas price feedback mechanism used for transactions
     // cancelled due to shared object congestion
     #[serde(skip_serializing_if = "is_false")]
-    congested_objects_gas_price_feedback_mechanism: bool,
+    congestion_control_gas_price_feedback_mechanism: bool,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -1272,9 +1272,9 @@ impl ProtocolConfig {
 
     /// Check if the gas price feedback mechanism (which is used for
     /// transactions cancelled due to shared object congestion) is enabled
-    pub fn congested_objects_gas_price_feedback_mechanism(&self) -> bool {
+    pub fn congestion_control_gas_price_feedback_mechanism(&self) -> bool {
         self.feature_flags
-            .congested_objects_gas_price_feedback_mechanism
+            .congestion_control_gas_price_feedback_mechanism
     }
 }
 
@@ -2065,7 +2065,7 @@ impl ProtocolConfig {
                         // Enable the gas price feedback mechanism (which is used for
                         // transactions cancelled due to shared object congestion) in devnet
                         cfg.feature_flags
-                            .congested_objects_gas_price_feedback_mechanism = true;
+                            .congestion_control_gas_price_feedback_mechanism = true;
                     }
                 }
                 // Use this template when making changes:
@@ -2217,6 +2217,16 @@ impl ProtocolConfig {
 
     pub fn set_consensus_batched_block_sync_for_testing(&mut self, val: bool) {
         self.feature_flags.consensus_batched_block_sync = val;
+    }
+
+    pub fn set_congestion_control_min_free_execution_slot_for_testing(&mut self, val: bool) {
+        self.feature_flags
+            .congestion_control_min_free_execution_slot = val;
+    }
+
+    pub fn set_congestion_control_gas_price_feedback_mechanism_for_testing(&mut self, val: bool) {
+        self.feature_flags
+            .congestion_control_gas_price_feedback_mechanism = val;
     }
 }
 

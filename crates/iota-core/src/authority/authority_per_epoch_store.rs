@@ -189,6 +189,10 @@ impl DeferredTransaction {
             suggested_gas_price,
         }
     }
+
+    pub fn suggested_gas_price(&self) -> Option<u64> {
+        self.suggested_gas_price
+    }
 }
 
 /// Represents a scheduling result: a transaction can be either scheduled
@@ -1782,7 +1786,7 @@ impl AuthorityPerEpochStore {
 
         if self
             .protocol_config
-            .congested_objects_gas_price_feedback_mechanism()
+            .congestion_control_gas_price_feedback_mechanism()
         {
             self.tables()?
                 .deferred_transactions_v2
@@ -2007,7 +2011,7 @@ impl AuthorityPerEpochStore {
     pub fn deferred_transactions_empty(&self) -> bool {
         if self
             .protocol_config
-            .congested_objects_gas_price_feedback_mechanism()
+            .congestion_control_gas_price_feedback_mechanism()
         {
             self.tables()
                 .expect("deferred transactions should not be read past end of epoch")
@@ -2993,7 +2997,7 @@ impl AuthorityPerEpochStore {
                         &mut shared_input_next_version,
                         cancelled_txns,
                         self.protocol_config
-                            .congested_objects_gas_price_feedback_mechanism(),
+                            .congestion_control_gas_price_feedback_mechanism(),
                     );
                     version_assignment.push((*txn.digest(), assigned_versions));
                 }
@@ -3600,7 +3604,7 @@ impl AuthorityPerEpochStore {
 
                                 let suggested_gas_price = if self
                                     .protocol_config
-                                    .congested_objects_gas_price_feedback_mechanism()
+                                    .congestion_control_gas_price_feedback_mechanism()
                                 {
                                     let current_commit_suggested_gas_price =
                                         suggested_gas_price_calculator
@@ -3683,15 +3687,15 @@ impl AuthorityPerEpochStore {
                         // we have to update the following:
                         // - shared object execution slots (for congestion tracker);
                         // - shared object congestion info (for suggested gas price calculator).
-                        // We only need to do this if `max_execution_duration_per_commit` is
-                        // `Some`, since otherwise this bumping will panic as object
-                        // execution slots are only initialized if
-                        // `max_execution_duration_per_commit` is not `None`.
-                        if certificate.contains_shared_object()
-                            && self.get_max_execution_duration_per_commit().is_some()
-                        {
-                            shared_object_congestion_tracker
-                                .bump_object_execution_slots(&certificate, start_time);
+                        if certificate.contains_shared_object() {
+                            if self.get_max_execution_duration_per_commit().is_some() {
+                                // We only need to do this if `max_execution_duration_per_commit`
+                                // is `Some`, since otherwise this bumping will panic as object
+                                // execution slots are only initialized if
+                                // `max_execution_duration_per_commit` is not `None`.
+                                shared_object_congestion_tracker
+                                    .bump_object_execution_slots(&certificate, start_time);
+                            }
 
                             suggested_gas_price_calculator.update_congestion_info(
                                 &certificate,
@@ -4344,7 +4348,7 @@ impl ConsensusCommitOutput {
 
         if epoch_store
             .protocol_config
-            .congested_objects_gas_price_feedback_mechanism()
+            .congestion_control_gas_price_feedback_mechanism()
         {
             batch.delete_batch(&tables.deferred_transactions_v2, self.deleted_deferred_txns)?;
             batch.insert_batch(&tables.deferred_transactions_v2, self.deferred_txns)?;
