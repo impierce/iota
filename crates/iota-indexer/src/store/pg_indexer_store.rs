@@ -2508,8 +2508,7 @@ impl IndexerStoreExt for PgIndexerStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
                 IndexerError::PostgresWrite(format!(
-                    "Failed to persist all object mutation chunks: {:?}",
-                    e
+                    "Failed to persist all object mutation chunks: {e:?}",
                 ))
             })?;
         let deletion_futures = deletion_chunks
@@ -2528,8 +2527,7 @@ impl IndexerStoreExt for PgIndexerStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
                 IndexerError::PostgresWrite(format!(
-                    "Failed to persist all object deletion chunks: {:?}",
-                    e
+                    "Failed to persist all object deletion chunks: {e:?}",
                 ))
             })?;
 
