@@ -107,7 +107,7 @@ pub(crate) struct DagState {
     pending_commit_votes: VecDeque<CommitVote>,
 
     /// Acknowledgments pending to be included in new blocks. These represent
-    /// votes indicating availability of transaction data from the
+    /// votes indicating the availability of transaction data from the
     /// corresponding blocks
     pending_acknowledgments: BTreeSet<BlockRef>,
 
@@ -234,7 +234,6 @@ impl DagState {
             let authority_index = state.context.committee.to_authority_index(i).unwrap();
             let (block_headers, transactions_by_author, eviction_round) = {
                 let eviction_round = Self::eviction_round(round, cached_rounds);
-                // TODO: scan for blocks?
                 let block_headers = state
                     .store
                     .scan_block_headers_by_author(authority_index, eviction_round + 1)
@@ -250,7 +249,7 @@ impl DagState {
 
             // Update the block metadata for the authority.
             for block_header in &block_headers {
-                state.update_block_metadata(block_header);
+                state.update_block_header_metadata(block_header);
             }
             for transactions in &transactions_by_author {
                 state.update_transaction_metadata(transactions);
@@ -272,8 +271,8 @@ impl DagState {
     pub(crate) fn accept_block_header(&mut self, block_header: VerifiedBlockHeader) {
         assert_ne!(
             block_header.round(),
-            0,
-            "Genesis block should not be accepted into DAG."
+            GENESIS_ROUND,
+            "Genesis header should not be accepted into DAG."
         );
 
         let block_ref = block_header.reference();
@@ -284,7 +283,7 @@ impl DagState {
         let now = self.context.clock.timestamp_utc_ms();
         if block_header.timestamp_ms() > now {
             panic!(
-                "Block {:?} cannot be accepted! Block timestamp {} is greater than local timestamp {}.",
+                "Block header {:?} cannot be accepted! Block header timestamp {} is greater than local timestamp {}.",
                 block_header,
                 block_header.timestamp_ms(),
                 now,
@@ -297,11 +296,11 @@ impl DagState {
             let existing_blocks = self.get_uncommitted_blocks_at_slot(block_ref.into());
             assert!(
                 existing_blocks.is_empty(),
-                "Block Rejected! Attempted to add block header {block_header:#?} to own slot where \
-                block(s) {existing_blocks:#?} already exists."
+                "Block header Rejected! Attempted to add block header {block_header:#?} to own slot where \
+                block header(s) {existing_blocks:#?} already exists."
             );
         }
-        self.update_block_metadata(&block_header);
+        self.update_block_header_metadata(&block_header);
         debug!(
             "block header {} pushed to write to store batch by {}",
             block_header, self.context.own_index
@@ -312,11 +311,11 @@ impl DagState {
         } else {
             "others"
         };
-        // TODO: rename to accepted block headers?
+
         self.context
             .metrics
             .node_metrics
-            .accepted_blocks
+            .accepted_block_headers
             .with_label_values(&[source])
             .inc();
     }
@@ -359,8 +358,8 @@ impl DagState {
             .set(gap as i64);
     }
 
-    /// Updates internal metadata for a block.
-    fn update_block_metadata(&mut self, block_header: &VerifiedBlockHeader) {
+    /// Updates internal metadata for accepted block header.
+    fn update_block_header_metadata(&mut self, block_header: &VerifiedBlockHeader) {
         let block_ref = block_header.reference();
         self.recent_block_headers
             .insert(block_ref, block_header.clone());
@@ -393,9 +392,10 @@ impl DagState {
             .insert(transaction.block_ref(), transaction.clone());
     }
 
-    // Function updates who knows which BlockHeaders what after receiving a new
-    // block header, which is accepted. In particular, it traverses the DAG from
-    // the block header and updates the knowledge of the given authority.
+    /// Updates the cordial knowledge about which authorities know which block
+    /// headers after accepting a new block header. In particular, it
+    /// traverses the DAG from the given block header and updates the
+    /// knowledge for the corresponding authority.
     fn update_cordial_knowledge(&mut self, block_header: &VerifiedBlockHeader) {
         let block_reference = block_header.reference();
         let block_author = block_reference.author;
@@ -410,7 +410,7 @@ impl DagState {
             .collect::<Vec<_>>();
 
         // If the block header is in the recent_dag_cordial_knowledge, then
-        // don't update if it is already there
+        // don't update it
         if self.recent_dag_cordial_knowledge[block_author.value()].contains_key(&round_digest) {
             return;
         }
@@ -471,14 +471,17 @@ impl DagState {
         }
     }
 
-    /// Accepts a block header into DagState and keeps it in memory.
-    pub(crate) fn accept_block_headers(&mut self, blocks: Vec<VerifiedBlockHeader>) {
+    /// Accepts block headers into DagState and keeps it in memory.
+    pub(crate) fn accept_block_headers(&mut self, block_headers: Vec<VerifiedBlockHeader>) {
         debug!(
             "Accepting block headers: {}",
-            blocks.iter().map(|b| b.reference().to_string()).join(",")
+            block_headers
+                .iter()
+                .map(|b| b.reference().to_string())
+                .join(",")
         );
-        for block in blocks {
-            self.accept_block_header(block);
+        for block_header in block_headers {
+            self.accept_block_header(block_header);
         }
     }
 
@@ -581,13 +584,13 @@ impl DagState {
             .store
             .read_block_headers(&missing_refs)
             .unwrap_or_else(|e| panic!("Failed to read from storage: {e:?}"));
-        // TODO:similar metric for header reads count
-        // self.context
-        // .metrics
-        // .node_metrics
-        // .dag_state_store_read_count
-        // .with_label_values(&["get_blocks"])
-        // .inc();
+
+        self.context
+            .metrics
+            .node_metrics
+            .dag_state_store_read_count
+            .with_label_values(&["get_block_headers"])
+            .inc();
 
         for ((index, _), result) in missing_headers.into_iter().zip(store_results.into_iter()) {
             block_headers[index] = result;
@@ -691,22 +694,18 @@ impl DagState {
             let Some(block) = self.get_block_header(&block_ref) else {
                 panic!("Block Header {block_ref:?} should exist in DAG!");
             };
-            linked.extend(block.ancestors().iter().cloned());
+            linked.extend(
+                block
+                    .ancestors()
+                    .iter()
+                    .filter(|ancestor| ancestor.round >= earlier_round)
+                    .cloned(),
+            );
         }
-        linked
-            .range((
-                Included(BlockRef::new(
-                    earlier_round,
-                    AuthorityIndex::ZERO,
-                    BlockHeaderDigest::MIN,
-                )),
-                Unbounded,
-            ))
-            .map(|r| {
-                self.get_block_header(r)
-                    .unwrap_or_else(|| panic!("Block {r:?} should exist in DAG!"))
-                    .clone()
-            })
+        let block_headers = self.get_block_headers(&linked.iter().cloned().collect::<Vec<_>>());
+        block_headers
+            .into_iter()
+            .map(|opt| opt.unwrap_or_else(|| panic!("Block should exist in DAG!")))
             .collect()
     }
 
@@ -750,7 +749,7 @@ impl DagState {
             return self
                 .recent_block_headers
                 .get(last)
-                .expect("Block should be found in recent blocks")
+                .expect("Block header should be found in recent block headers")
                 .clone();
         }
 
@@ -763,29 +762,26 @@ impl DagState {
         genesis_block.verified_block_header.clone()
     }
 
-    /// Returns cached recent blocks from the specified authority.
+    /// Returns own cached recent blocks.
     /// Blocks returned are limited to round >= `start`, and cached.
     /// NOTE: caller should not assume returned blocks are always chained.
-    /// "Disconnected" blocks can be returned when there are byzantine blocks,
-    /// or when received blocks are not deduped.
-    pub(crate) fn get_cached_blocks(
-        &self,
-        authority: AuthorityIndex,
-        start: Round,
-    ) -> Vec<VerifiedBlock> {
+    pub(crate) fn get_own_cached_blocks(&self, start: Round) -> Vec<VerifiedBlock> {
+        let authority = self.context.own_index;
         let mut blocks = vec![];
         for block_ref in self.recent_headers_refs_by_authority[authority].range((
             Included(BlockRef::new(start, authority, BlockHeaderDigest::MIN)),
             Unbounded,
         )) {
-            // TODO: panic if header is missing and return vector of tuples with header and
-            //  option<transactions> as not all transactions must exist. Although this is
-            //  only used to load own blocks to stream, this should not be problematic.
-            if let Some(header) = self.recent_block_headers.get(block_ref) {
-                if let Some(transactions) = self.recent_transactions.get(block_ref) {
-                    blocks.push(VerifiedBlock::new(header.clone(), transactions.clone()));
-                }
-            }
+            // Panic if header or transactions are missing for the block_ref.
+            let header = self
+                .recent_block_headers
+                .get(block_ref)
+                .unwrap_or_else(|| panic!("Missing block header for {block_ref:?}"));
+            let transactions = self
+                .recent_transactions
+                .get(block_ref)
+                .unwrap_or_else(|| panic!("Missing transactions for {block_ref:?}"));
+            blocks.push(VerifiedBlock::new(header.clone(), transactions.clone()));
         }
         blocks
     }
@@ -793,9 +789,7 @@ impl DagState {
     /// Returns cached recent block headers from the specified authority.
     /// Block headers returned are limited to round >= `start`, and cached.
     /// NOTE: caller should not assume returned block headers are always
-    /// chained. "Disconnected" block headers can be returned when there are
-    /// byzantine block headers, or when received block headers are not
-    /// deduped.
+    /// chained.
     #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn get_cached_block_headers_since_round(
         &self,
@@ -804,6 +798,11 @@ impl DagState {
     ) -> Vec<VerifiedBlockHeader> {
         self.get_cached_block_headers_in_range(authority, start, Round::MAX, usize::MAX)
     }
+
+    /// Returns cached block headers from the specified authority within a given
+    /// round range. Block headers returned are limited to `start_round` <=
+    /// round < `end_round`, up to `limit` entries. NOTE: Only cached block
+    /// headers are returned; storage is not checked.
     pub(crate) fn get_cached_block_headers_in_range(
         &self,
         authority: AuthorityIndex,
@@ -831,7 +830,7 @@ impl DagState {
             let block_header = self
                 .recent_block_headers
                 .get(block_ref)
-                .expect("Block should exist in recent blocks");
+                .expect("Block header should exist in recent block headers");
             block_headers.push(block_header.clone());
             if block_headers.len() >= limit {
                 break;
@@ -878,8 +877,8 @@ impl DagState {
     /// each authority (evicted round + 1), otherwise the method will panic.
     /// It's the caller's responsibility to ensure that is not requesting for
     /// earlier rounds. In case of equivocation for an authority's last
-    /// slot, one block will be returned (the last in order) and the other
-    /// equivocating blocks will be returned.
+    /// slot, one block will be returned (the last in order) and for other
+    /// equivocating blocks block references will be returned.
     pub(crate) fn get_last_cached_block_header_per_authority(
         &self,
         end_round: Round,
@@ -940,7 +939,7 @@ impl DagState {
                     let block_header = self
                         .recent_block_headers
                         .get(block_ref)
-                        .expect("Block should exist in recent blocks");
+                        .expect("Block header should exist in recent block headers");
                     block_headers[authority_index] = block_header.clone();
                     continue;
                 }
@@ -988,10 +987,9 @@ impl DagState {
         result.next().is_some()
     }
 
-    // TODO: implement for blocks as well
-    /// Checks whether the required block headers are in cache, if exist, or
-    /// otherwise will check in store. The method is not caching back the
-    /// results, so its expensive if keep asking for cache missing block
+    /// Checks whether the required block headers are in cache; if not, then
+    /// check in store. The method is not caching back the
+    /// results, so it's expensive to keep asking for cache missing block
     /// headers.
     pub(crate) fn contains_block_headers(&self, block_refs: Vec<BlockRef>) -> Vec<bool> {
         let mut exist = vec![false; block_refs.len()];
@@ -1044,16 +1042,16 @@ impl DagState {
         blocks.first().cloned().unwrap()
     }
 
-    /// Checks whether the required transactions are in cache, if exist, or
-    /// otherwise will check in store. The method is not caching back the
-    /// results, so its expensive if keep asking for cache missing transactions.
+    /// Checks whether the required transactions are in cache; if not, then
+    /// check in store. The method is not caching back the
+    /// results, so it's expensive to keep asking for cache missing
+    /// transactions.
     pub(crate) fn contains_transactions(&self, block_refs: Vec<BlockRef>) -> Vec<bool> {
         let mut exist = vec![false; block_refs.len()];
         let mut missing = Vec::new();
 
         for (index, block_ref) in block_refs.into_iter().enumerate() {
             if block_ref.round == GENESIS_ROUND {
-                // Allow the caller to handle the invalid genesis ancestor error.
                 if self.genesis.contains_key(&block_ref) {
                     exist[index] = true;
                 }
@@ -1136,11 +1134,12 @@ impl DagState {
             assert_eq!(commit.index(), 1);
         }
 
-        let commit_round_advanced = if let Some(previous_commit) = &self.last_commit {
-            previous_commit.round() < commit.round()
-        } else {
-            true
-        };
+        // Ensure that commit rounds are strictly increasing
+        assert!(
+            self.last_commit
+                .as_ref()
+                .is_none_or(|prev| prev.round() < commit.round())
+        );
 
         self.last_commit = Some(commit.clone());
 
@@ -1153,17 +1152,15 @@ impl DagState {
                 .set(gap as i64);
         }
 
-        if commit_round_advanced {
-            let now = std::time::Instant::now();
-            if let Some(previous_time) = self.last_commit_round_advancement_time {
-                self.context
-                    .metrics
-                    .node_metrics
-                    .commit_round_advancement_interval
-                    .observe(now.duration_since(previous_time).as_secs_f64())
-            }
-            self.last_commit_round_advancement_time = Some(now);
+        let now = std::time::Instant::now();
+        if let Some(previous_time) = self.last_commit_round_advancement_time {
+            self.context
+                .metrics
+                .node_metrics
+                .commit_round_advancement_interval
+                .observe(now.duration_since(previous_time).as_secs_f64())
         }
+        self.last_commit_round_advancement_time = Some(now);
 
         for block_ref in commit.blocks().iter() {
             self.last_committed_rounds[block_ref.author] = max(
@@ -1261,13 +1258,14 @@ impl DagState {
     pub(crate) fn evict_transactions(&mut self) {
         let last_solid_leader_round = self.last_solid_commit_leader_round;
         if let Some(round) = last_solid_leader_round {
-            let min_round: Round =
+            let tr_eviction_round: Round =
                 round.saturating_sub(MAX_TRANSACTIONS_ACK_DEPTH + MAX_LINEARIZER_DEPTH);
-
+            let eviction_round = self.calculate_authority_eviction_round(self.context.own_index);
+            let min_round = min(tr_eviction_round, eviction_round + 1);
             // Construct a dummy BlockRef with the minimum round to split on.
             // All entries < dummy will be removed.
             let lower_bound =
-                BlockRef::new(min_round + 1, AuthorityIndex::ZERO, BlockHeaderDigest::MIN);
+                BlockRef::new(min_round, AuthorityIndex::ZERO, BlockHeaderDigest::MIN);
 
             // Remove entries with round < min_round
             self.recent_transactions = self.recent_transactions.split_off(&lower_bound);
@@ -1385,7 +1383,7 @@ impl DagState {
         self.last_committed_rounds.clone()
     }
 
-    /// After each flush, DagState becomes persisted in storage and it expected
+    /// After each flush, DagState becomes persisted in storage and is expected
     /// to recover all internal states from storage after restarts.
     pub(crate) fn flush(&mut self) {
         let _s = self
@@ -1454,14 +1452,16 @@ impl DagState {
             let eviction_round = self.calculate_authority_eviction_round(authority_index);
             let recent_refs = &mut self.recent_headers_refs_by_authority[authority_index];
 
-            // Remove old entries from cached maps
-            while let Some(block_ref) = recent_refs.first() {
-                if block_ref.round <= eviction_round {
-                    self.recent_block_headers.remove(block_ref);
-                    recent_refs.pop_first();
-                } else {
-                    break;
-                }
+            // Evict everything below split_key
+            let split_key =
+                BlockRef::new(eviction_round + 1, authority_index, BlockHeaderDigest::MIN);
+
+            let to_keep = recent_refs.split_off(&split_key);
+            let evicted = std::mem::replace(recent_refs, to_keep);
+
+            // Remove evicted headers from recent_block_headers
+            for block_ref in &evicted {
+                self.recent_block_headers.remove(block_ref);
             }
 
             self.evicted_rounds[authority_index] = eviction_round;
@@ -1526,7 +1526,7 @@ impl DagState {
             .end()
     }
 
-    /// The last round that should get evicted after a cache clean up operation.
+    /// The last round that should get evicted after a cache-clean-up operation.
     /// After this round we are guaranteed to have all the produced blocks
     /// from that authority. For any round that is <= `last_evicted_round`
     /// we don't have such guarantees as out of order blocks might exist.
@@ -1557,7 +1557,7 @@ impl DagState {
             use crate::stake_aggregator::{QuorumThreshold, StakeAggregator};
             let mut quorum = StakeAggregator::<QuorumThreshold>::new();
 
-            // Since the minimum wave length is 3 we expect to find a quorum in the
+            // Since the wave length is 3 we expect to find a quorum in the
             // uncommitted rounds.
             let blocks = self.get_uncommitted_blocks_at_round(round);
             for block in &blocks {
