@@ -29,16 +29,16 @@ use tracing::{debug, info, instrument, trace_span, warn};
 
 use crate::{
     authority::{
-        AuthorityMetrics, AuthorityState,
         authority_per_epoch_store::{
             AuthorityPerEpochStore, ConsensusStats, ConsensusStatsAPI, ExecutionIndices,
             ExecutionIndicesWithStats,
-        },
-        backpressure::{BackpressureManager, BackpressureSubscriber},
+        }, backpressure::{BackpressureManager, BackpressureSubscriber},
         epoch_start_configuration::EpochStartConfigTrait,
+        AuthorityMetrics,
+        AuthorityState,
     },
     checkpoints::{CheckpointService, CheckpointServiceNotify},
-    consensus_types::{AuthorityIndex, consensus_output_api::ConsensusOutputAPI},
+    consensus_types::{consensus_output_api::ConsensusOutputAPI, AuthorityIndex},
     execution_cache::{ObjectCacheRead, TransactionCacheRead},
     scoring_decision::update_low_scoring_authorities,
     transaction_manager::TransactionManager,
@@ -208,7 +208,10 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
         // TODO: Is this check necessary? For now mysticeti will not
         // return more than one leader per round so we are not in danger of
         // ignoring any commits.
-        assert!(round >= last_committed_round);
+        assert!(
+            round >= last_committed_round,
+            "Consensus output round {round} is less than last committed round {last_committed_round}"
+        );
         if last_committed_round == round {
             // we can receive the same commit twice after restart
             // It is critical that the writes done by this function are atomic - otherwise
@@ -853,7 +856,7 @@ mod tests {
     use futures::pin_mut;
     use iota_protocol_config::{Chain, ConsensusTransactionOrdering};
     use iota_types::{
-        base_types::{AuthorityName, IotaAddress, random_object_ref},
+        base_types::{random_object_ref, AuthorityName, IotaAddress},
         committee::Committee,
         messages_consensus::{
             AuthorityCapabilitiesV1, ConsensusTransaction, ConsensusTransactionKind,
