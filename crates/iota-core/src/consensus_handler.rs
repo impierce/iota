@@ -29,16 +29,16 @@ use tracing::{debug, info, instrument, trace_span, warn};
 
 use crate::{
     authority::{
+        AuthorityMetrics, AuthorityState,
         authority_per_epoch_store::{
             AuthorityPerEpochStore, ConsensusStats, ConsensusStatsAPI, ExecutionIndices,
             ExecutionIndicesWithStats,
-        }, backpressure::{BackpressureManager, BackpressureSubscriber},
+        },
+        backpressure::{BackpressureManager, BackpressureSubscriber},
         epoch_start_configuration::EpochStartConfigTrait,
-        AuthorityMetrics,
-        AuthorityState,
     },
     checkpoints::{CheckpointService, CheckpointServiceNotify},
-    consensus_types::{consensus_output_api::ConsensusOutputAPI, AuthorityIndex},
+    consensus_types::{AuthorityIndex, consensus_output_api::ConsensusOutputAPI},
     execution_cache::{ObjectCacheRead, TransactionCacheRead},
     scoring_decision::update_low_scoring_authorities,
     transaction_manager::TransactionManager,
@@ -856,7 +856,7 @@ mod tests {
     use futures::pin_mut;
     use iota_protocol_config::{Chain, ConsensusTransactionOrdering};
     use iota_types::{
-        base_types::{random_object_ref, AuthorityName, IotaAddress},
+        base_types::{AuthorityName, IotaAddress, random_object_ref},
         committee::Committee,
         messages_consensus::{
             AuthorityCapabilitiesV1, ConsensusTransaction, ConsensusTransactionKind,
