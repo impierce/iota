@@ -7,6 +7,7 @@ use std::{fs, net::SocketAddr, path::PathBuf};
 use crate::{
     benchmark::{BenchmarkParameters, BenchmarkType},
     client::Instance,
+    display,
     error::{MonitorError, MonitorResult},
     protocol::ProtocolMetrics,
     ssh::{CommandContext, SshConnectionManager},
@@ -67,6 +68,7 @@ impl Monitor {
         // Configure and reload grafana.
         let instance = std::iter::once(self.instance.clone());
         let commands = Grafana::setup_commands();
+        display::action(commands.clone());
         self.ssh_manager
             .execute(instance, commands, CommandContext::default())
             .await?;
@@ -187,6 +189,8 @@ impl Prometheus {
             "    static_configs:",
             "      - targets:",
             &format!("        - {ip}:{port}"),
+            "        labels:",
+            &format!("          host: {id}"),
         ]
         .join("\n")
     }
@@ -215,6 +219,8 @@ pub struct Grafana;
 impl Grafana {
     /// The path to the datasources directory.
     const DATASOURCES_PATH: &'static str = "/etc/grafana/provisioning/datasources";
+    /// The path to the dashboards directory.
+    const DASHBOARDS_PATH: &'static str = "/etc/grafana/provisioning/dashboards";
     /// The default grafana port.
     pub const DEFAULT_PORT: u16 = 3000;
 
@@ -242,6 +248,30 @@ impl Grafana {
                 Self::datasource(),
                 Self::DATASOURCES_PATH
             ),
+            &format!("(rm -r {} || true)", Self::DASHBOARDS_PATH),
+            &format!("mkdir -p {}", Self::DASHBOARDS_PATH),
+            &format!(
+                "sudo echo \"{}\" > {}/dashboards.yml",
+                Self::dashboard_provider(),
+                Self::DASHBOARDS_PATH
+            ),
+            &format!(
+                "sudo echo '{}' > {}/aws-dashboard.json",
+                include_str!("../assets/grafana-dashboard.json"),
+                Self::DASHBOARDS_PATH
+            ),
+            &format!(
+                "sudo cp -f iota/dev-tools/grafana-local/dashboards/cluster-status-dashboard.json {}",
+                Self::DASHBOARDS_PATH
+            ),
+            &format!(
+                "sudo cp -f iota/dev-tools/grafana-local/dashboards/consensus-overview.json {}",
+                Self::DASHBOARDS_PATH
+            ),
+            &format!(
+                "sudo cp -f iota/dev-tools/grafana-local/dashboards/starfish-overview.json {}",
+                Self::DASHBOARDS_PATH
+            ),
             "sudo service grafana-server restart",
         ]
         .join(" && ")
@@ -262,7 +292,27 @@ impl Grafana {
             "    orgId: 1",
             &format!("    url: http://localhost:{}", Prometheus::DEFAULT_PORT),
             "    editable: true",
-            "    uid: Fixed-UID-testbed",
+            "    uid: prometheus",
+        ]
+        .join("\n")
+    }
+
+    /// Generate the dashboard provider configuration.
+    fn dashboard_provider() -> String {
+        [
+            "apiVersion: 1",
+            "",
+            "providers:",
+            "  - name: \"testbed-dashboards\"",
+            "    orgId: 1",
+            "    folder: \"\"",
+            "    type: file",
+            "    disableDeletion: false",
+            "    editable: true",
+            "    allowUiUpdates: true",
+            "    options:",
+            &format!("      path: {}", Self::DASHBOARDS_PATH),
+            "      updateIntervalSeconds: 30",
         ]
         .join("\n")
     }
