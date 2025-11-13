@@ -440,7 +440,7 @@ impl ServerBuilder {
         )
         .map_err(|e| Error::ServerInit(format!("Failed to create pg connection pool: {e}")))?;
 
-        {
+        if !config.connection.skip_migration_consistency_check {
             // Compatibility check
             info!("Starting compatibility check");
             let mut connection = get_pool_connection(&reader.get_pool())?;
