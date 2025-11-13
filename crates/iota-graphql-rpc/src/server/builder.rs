@@ -405,13 +405,13 @@ impl ServerBuilder {
         // PROMETHEUS
         let prom_addr: SocketAddr = format!(
             "{}:{}",
-            config.connection.prom_url, config.connection.prom_port
+            config.connection.prom_host, config.connection.prom_port
         )
         .parse()
         .map_err(|_| {
             Error::Internal(format!(
                 "Failed to parse url {}, port {} into socket address",
-                config.connection.prom_url, config.connection.prom_port
+                config.connection.prom_host, config.connection.prom_port
             ))
         })?;
 
