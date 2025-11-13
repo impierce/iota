@@ -23,17 +23,17 @@ pub enum Command {
         file: Option<PathBuf>,
     },
     StartServer {
-        #[clap(flatten)]
+        #[command(flatten)]
         ide: Ide,
 
-        #[clap(flatten)]
+        #[command(flatten)]
         connection: ConnectionConfig,
 
         /// Path to TOML file containing configuration for service.
         #[arg(short, long)]
         config: Option<PathBuf>,
 
-        #[clap(flatten)]
+        #[command(flatten)]
         tx_exec_full_node: TxExecFullNodeConfig,
     },
 }
