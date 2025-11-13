@@ -18,7 +18,9 @@ use crate::{
         display::StoredDisplay,
         obj_indices::StoredObjectVersion,
         transactions::{CheckpointTxGlobalOrder, OptimisticTransaction},
+        watermarks::StoredWatermark,
     },
+    pruning::pruner::PrunableTable,
     types::{
         EventIndex, IndexedCheckpoint, IndexedEvent, IndexedPackage, IndexedTransaction, TxIndex,
     },
@@ -35,6 +37,10 @@ pub trait IndexerStore: Any + Clone + Sync + Send + 'static {
     async fn get_latest_object_snapshot_watermark(
         &self,
     ) -> Result<Option<CommitterWatermark>, IndexerError>;
+
+    async fn get_latest_object_snapshot_checkpoint_sequence_number(
+        &self,
+    ) -> Result<Option<u64>, IndexerError>;
 
     async fn get_chain_identifier(&self) -> Result<Option<Vec<u8>>, IndexerError>;
 
@@ -122,6 +128,17 @@ pub trait IndexerStore: Any + Clone + Sync + Send + 'static {
     ) -> Result<(), IndexerError>
     where
         E::Iterator: Iterator<Item: AsRef<str>>;
+
+    /// Updates each watermark entry's lower bounds per the list of tables and
+    /// their new epoch lower bounds.
+    async fn update_watermarks_lower_bound(
+        &self,
+        watermarks: Vec<(PrunableTable, u64)>,
+    ) -> Result<(), IndexerError>;
+
+    /// Load all watermark entries from the store, and the latest timestamp from
+    /// the db.
+    async fn get_watermarks(&self) -> Result<(Vec<StoredWatermark>, i64), IndexerError>;
 
     async fn persist_checkpoint_objects(
         &self,

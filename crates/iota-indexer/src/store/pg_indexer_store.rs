@@ -2,12 +2,16 @@
 // Modifications Copyright (c) 2024 IOTA Stiftung
 // SPDX-License-Identifier: Apache-2.0
 use core::result::Result::Ok;
-use std::{any::Any as StdAny, collections::BTreeMap, time::Duration};
+use std::{
+    any::Any as StdAny,
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use diesel::{
     ExpressionMethods, OptionalExtension, PgConnection, QueryDsl, RunQueryDsl,
-    dsl::{max, min},
+    dsl::{max, min, sql},
     sql_types::{Array, BigInt, Bytea, Nullable, SmallInt, Text},
     upsert::excluded,
 };
@@ -16,6 +20,7 @@ use iota_protocol_config::ProtocolConfig;
 use iota_types::{
     base_types::ObjectID,
     digests::{ChainIdentifier, CheckpointDigest},
+    messages_checkpoint::CheckpointSequenceNumber,
 };
 use itertools::Itertools;
 use strum::IntoEnumIterator;
@@ -24,6 +29,7 @@ use tracing::info;
 
 use super::pg_partition_manager::{EpochPartitionData, PgPartitionManager};
 use crate::{
+    blocking_call_is_ok_or_panic,
     db::ConnectionPool,
     errors::{Context, IndexerError, IndexerResult},
     ingestion::{
@@ -56,7 +62,9 @@ use crate::{
         watermarks::StoredWatermark,
     },
     on_conflict_do_update, on_conflict_do_update_with_condition, persist_chunk_into_table,
-    persist_chunk_into_table_in_existing_connection, read_only_blocking,
+    persist_chunk_into_table_in_existing_connection,
+    pruning::pruner::PrunableTable,
+    read_only_blocking, run_query, run_query_with_retry,
     schema::{
         chain_identifier, checkpoints, display, epochs, event_emit_module, event_emit_package,
         event_senders, event_struct_instantiation, event_struct_module, event_struct_name,
@@ -398,7 +406,7 @@ impl PgIndexerStore {
                 .select((
                     watermarks::epoch_hi_inclusive,
                     watermarks::checkpoint_hi_inclusive,
-                    watermarks::tx_hi_inclusive,
+                    watermarks::tx_hi,
                 ))
                 .filter(
                     watermarks::entity
@@ -409,13 +417,25 @@ impl PgIndexerStore {
                 .optional()
                 .map(|v| {
                     v.map(|(epoch, cp, tx)| CommitterWatermark {
-                        epoch: epoch as u64,
-                        cp: cp as u64,
-                        tx: tx as u64,
+                        epoch_hi_inclusive: epoch as u64,
+                        checkpoint_hi_inclusive: cp as u64,
+                        tx_hi: tx as u64,
                     })
                 })
         })
         .context("Failed reading latest object snapshot watermark from PostgresDB")
+    }
+
+    fn get_latest_object_snapshot_checkpoint_sequence_number(
+        &self,
+    ) -> Result<Option<CheckpointSequenceNumber>, IndexerError> {
+        read_only_blocking!(&self.blocking_cp, |conn| {
+            objects_snapshot::table
+                .select(max(objects_snapshot::checkpoint_sequence_number))
+                .first::<Option<i64>>(conn)
+                .map(|v| v.map(|v| v as CheckpointSequenceNumber))
+        })
+        .context("Failed reading latest object snapshot checkpoint sequence number from PostgresDB")
     }
 
     fn persist_display_updates(
@@ -1589,7 +1609,7 @@ impl PgIndexerStore {
                         watermarks::epoch_hi_inclusive.eq(excluded(watermarks::epoch_hi_inclusive)),
                         watermarks::checkpoint_hi_inclusive
                             .eq(excluded(watermarks::checkpoint_hi_inclusive)),
-                        watermarks::tx_hi_inclusive.eq(excluded(watermarks::tx_hi_inclusive)),
+                        watermarks::tx_hi.eq(excluded(watermarks::tx_hi)),
                     ))
                     .execute(conn)
                     .map_err(IndexerError::from)
@@ -1605,6 +1625,115 @@ impl PgIndexerStore {
         .tap_err(|e| {
             tracing::error!("Failed to persist watermarks with error: {}", e);
         })
+    }
+
+    fn map_epochs_to_cp_tx(
+        &self,
+        epochs: &[u64],
+    ) -> Result<HashMap<u64, (u64, u64)>, IndexerError> {
+        let pool = &self.blocking_cp;
+        let results: Vec<(i64, i64, i64)> = run_query!(pool, move |conn| {
+            epochs::table
+                .filter(epochs::epoch.eq_any(epochs.iter().map(|&e| e as i64)))
+                .select((
+                    epochs::epoch,
+                    epochs::first_checkpoint_id,
+                    epochs::first_tx_sequence_number,
+                ))
+                .load::<(i64, i64, i64)>(conn)
+        })
+        .context("Failed to fetch first checkpoint and tx seq num for epochs")?;
+
+        Ok(results
+            .into_iter()
+            .map(|(epoch, checkpoint, tx)| (epoch as u64, (checkpoint as u64, tx as u64)))
+            .collect())
+    }
+
+    fn update_watermarks_lower_bound(
+        &self,
+        watermarks: Vec<(PrunableTable, u64)>,
+    ) -> Result<(), IndexerError> {
+        use diesel::query_dsl::methods::FilterDsl;
+
+        let epochs: Vec<u64> = watermarks.iter().map(|(_table, epoch)| *epoch).collect();
+        let epoch_mapping = self.map_epochs_to_cp_tx(&epochs)?;
+        let lookups: Result<Vec<StoredWatermark>, IndexerError> = watermarks
+            .into_iter()
+            .map(|(table, epoch)| {
+                let (checkpoint, tx) = epoch_mapping.get(&epoch).ok_or_else(|| {
+                    IndexerError::PersistentStorageDataCorruption(format!(
+                        "epoch {epoch} not found in epoch mapping",
+                    ))
+                })?;
+                Ok(StoredWatermark::from_lower_bound_update(
+                    table.as_ref(),
+                    epoch,
+                    table.select_reader_lo(*checkpoint, *tx),
+                ))
+            })
+            .collect();
+        let lower_bound_updates = lookups?;
+        let guard = self
+            .metrics
+            .checkpoint_db_commit_latency_watermarks
+            .start_timer();
+        transactional_blocking_with_retry!(
+            &self.blocking_cp,
+            |conn| {
+                diesel::insert_into(watermarks::table)
+                    .values(&lower_bound_updates)
+                    .on_conflict(watermarks::entity)
+                    .do_update()
+                    .set((
+                        watermarks::reader_lo.eq(excluded(watermarks::reader_lo)),
+                        watermarks::epoch_lo.eq(excluded(watermarks::epoch_lo)),
+                        watermarks::timestamp_ms.eq(sql::<diesel::sql_types::BigInt>(
+                            "(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000)::bigint",
+                        )),
+                    ))
+                    .filter(excluded(watermarks::reader_lo).gt(watermarks::reader_lo))
+                    .filter(excluded(watermarks::epoch_lo).gt(watermarks::epoch_lo))
+                    .filter(
+                        diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                            "(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000)::bigint",
+                        )
+                        .gt(watermarks::timestamp_ms),
+                    )
+                    .execute(conn)
+            },
+            PG_DB_COMMIT_SLEEP_DURATION
+        )
+        .tap_ok(|_| {
+            let elapsed = guard.stop_and_record();
+            info!(elapsed, "Persisted watermarks");
+        })
+        .tap_err(|e| {
+            tracing::error!("Failed to persist watermarks with error: {}", e);
+        })?;
+        Ok(())
+    }
+
+    fn get_watermarks(&self) -> Result<(Vec<StoredWatermark>, i64), IndexerError> {
+        // read_only transaction, otherwise this will block and get blocked by write
+        // transactions to the same table.
+        run_query_with_retry!(
+            &self.blocking_cp,
+            |conn| {
+                let stored = watermarks::table
+                    .load::<StoredWatermark>(conn)
+                    .map_err(Into::into)
+                    .context("Failed reading watermarks from PostgresDB")?;
+                let timestamp = diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000)::bigint",
+                ))
+                .get_result(conn)
+                .map_err(Into::into)
+                .context("Failed reading current timestamp from PostgresDB")?;
+                Ok::<_, IndexerError>((stored, timestamp))
+            },
+            PG_DB_COMMIT_SLEEP_DURATION
+        )
     }
 
     async fn execute_in_blocking_worker<F, R>(&self, f: F) -> Result<R, IndexerError>
@@ -1679,6 +1808,15 @@ impl IndexerStore for PgIndexerStore {
     ) -> Result<Option<CommitterWatermark>, IndexerError> {
         self.execute_in_blocking_worker(|this| this.get_latest_object_snapshot_watermark())
             .await
+    }
+
+    async fn get_latest_object_snapshot_checkpoint_sequence_number(
+        &self,
+    ) -> Result<Option<CheckpointSequenceNumber>, IndexerError> {
+        self.execute_in_blocking_worker(|this| {
+            this.get_latest_object_snapshot_checkpoint_sequence_number()
+        })
+        .await
     }
 
     fn persist_objects_in_existing_transaction(
@@ -2328,6 +2466,19 @@ impl IndexerStore for PgIndexerStore {
         let elapsed = guard.stop_and_record();
         info!(elapsed, "Persisted {len} txs insertion orders");
         Ok(())
+    }
+
+    async fn update_watermarks_lower_bound(
+        &self,
+        watermarks: Vec<(PrunableTable, u64)>,
+    ) -> Result<(), IndexerError> {
+        self.execute_in_blocking_worker(move |this| this.update_watermarks_lower_bound(watermarks))
+            .await
+    }
+
+    async fn get_watermarks(&self) -> Result<(Vec<StoredWatermark>, i64), IndexerError> {
+        self.execute_in_blocking_worker(move |this| this.get_watermarks())
+            .await
     }
 }
 
