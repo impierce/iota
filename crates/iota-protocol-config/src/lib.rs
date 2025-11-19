@@ -406,6 +406,10 @@ struct FeatureFlags {
     // If true, enables the authentication of account using Move code.
     #[serde(skip_serializing_if = "is_false")]
     enable_move_authentication: bool,
+
+    // If true, validators will use the committee's score to calculate rewards.
+    #[serde(skip_serializing_if = "is_false")]
+    score_based_rewards: bool,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -1517,6 +1521,10 @@ impl ProtocolConfig {
     pub fn enable_move_authentication(&self) -> bool {
         self.feature_flags.enable_move_authentication
     }
+
+    pub fn score_based_rewards(&self) -> bool {
+        self.feature_flags.score_based_rewards
+    }
 }
 
 #[cfg(not(msim))]
@@ -2390,6 +2398,10 @@ impl ProtocolConfig {
                     // Enable committing transactions only for traversed headers in Starfish
                     cfg.feature_flags
                         .consensus_commit_transactions_only_for_traversed_headers = true;
+                    // Enables score based rewards on Devnet
+                    if chain != Chain::Testnet && chain != Chain::Mainnet {
+                        cfg.feature_flags.score_based_rewards = true;
+                    }
                 }
                 17 => {
                     // Increase the committee size to 100 on all networks.
