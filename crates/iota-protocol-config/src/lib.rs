@@ -97,6 +97,8 @@ pub const MAX_PROTOCOL_VERSION: u64 = 19;
 //             mechanism on devnet.
 //             Enable a separate gas price feedback mechanism for transactions
 //             using randomness on devnet.
+//             Allow metadata bytes indexed with a dedicated key in compiled
+//             Move modules in devnet.
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
 
@@ -385,6 +387,11 @@ struct FeatureFlags {
     // randomness.
     #[serde(skip_serializing_if = "is_false")]
     separate_gas_price_feedback_mechanism_for_randomness: bool,
+
+    // If true, it allows metadata bytes indexed with a dedicated key in a compiled module.
+    // This flag is used to provide the correct MoveVM configuration for clients.
+    #[serde(skip_serializing_if = "is_false")]
+    metadata_in_module_bytes: bool,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -1473,6 +1480,10 @@ impl ProtocolConfig {
         self.feature_flags
             .separate_gas_price_feedback_mechanism_for_randomness
     }
+
+    pub fn metadata_in_module_bytes(&self) -> bool {
+        self.feature_flags.metadata_in_module_bytes
+    }
 }
 
 #[cfg(not(msim))]
@@ -2363,6 +2374,7 @@ impl ProtocolConfig {
                         // randomness on devnet.
                         cfg.feature_flags
                             .separate_gas_price_feedback_mechanism_for_randomness = true;
+                        cfg.feature_flags.metadata_in_module_bytes = true;
                     }
                 }
                 // Use this template when making changes:
@@ -2569,6 +2581,10 @@ impl ProtocolConfig {
     ) {
         self.feature_flags
             .separate_gas_price_feedback_mechanism_for_randomness = val;
+    }
+
+    pub fn set_metadata_in_module_bytes_for_testing(&mut self, val: bool) {
+        self.feature_flags.metadata_in_module_bytes = val;
     }
 }
 
