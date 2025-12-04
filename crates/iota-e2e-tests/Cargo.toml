@@ -25,7 +25,6 @@ futures.workspace = true
 indexmap.workspace = true
 insta.workspace = true
 iota-sdk-types.workspace = true
-iota-sdk2.workspace = true
 jsonrpsee.workspace = true
 p256.workspace = true
 passkey-authenticator.workspace = true
