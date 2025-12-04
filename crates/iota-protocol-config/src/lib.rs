@@ -105,6 +105,7 @@ pub const MAX_PROTOCOL_VERSION: u64 = 19;
 //             Increase the base cost for transfer receive object in devnet.
 //             Switch consensus protocol to Starfish in testnet.
 //             Enable passkey authentication support in mainnet.
+//             Enable score based rewards on devnet.
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
 
@@ -2403,10 +2404,6 @@ impl ProtocolConfig {
                     // Enable committing transactions only for traversed headers in Starfish
                     cfg.feature_flags
                         .consensus_commit_transactions_only_for_traversed_headers = true;
-                    // Enables score based rewards on Devnet
-                    if chain != Chain::Testnet && chain != Chain::Mainnet {
-                        cfg.feature_flags.score_based_rewards = true;
-                    }
                 }
                 17 => {
                     // Increase the committee size to 100 on all networks.
@@ -2439,6 +2436,9 @@ impl ProtocolConfig {
                         // Increase the base cost for transfer receive object in devnet, since the
                         // implementation now does check if parent is not an account.
                         cfg.transfer_receive_object_cost_base = Some(100);
+                        // Enables score based rewards on Devnet
+                        cfg.feature_flags.score_based_rewards = true;
+                        cfg.scorer_version = Some(1);
                     }
 
                     if chain != Chain::Mainnet {
@@ -2449,6 +2449,7 @@ impl ProtocolConfig {
                     // Enable passkey authentication support in mainnet
                     cfg.feature_flags.passkey_auth = true;
                 }
+
                 // Use this template when making changes:
                 //
                 //     // modify an existing constant.
