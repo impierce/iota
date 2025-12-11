@@ -6231,6 +6231,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "iota-flamegraph-svg"
+version = "0.1.0"
+source = "git+https://github.com/iotaledger/flamegraph-svg?rev=ba681350dc9a72c9bae493b93840bdfbc01d0bbe#ba681350dc9a72c9bae493b93840bdfbc01d0bbe"
+
+[[package]]
 name = "iota-framework"
 version = "1.14.0-alpha"
 dependencies = [
@@ -14350,6 +14355,7 @@ dependencies = [
  "console-subscriber",
  "crossterm 0.25.0",
  "futures",
+ "iota-flamegraph-svg",
  "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -14358,6 +14364,7 @@ dependencies = [
  "parking_lot 0.12.3",
  "prometheus",
  "prost 0.13.3",
+ "rand 0.8.5",
  "serde",
  "thiserror 1.0.64",
  "tokio",
