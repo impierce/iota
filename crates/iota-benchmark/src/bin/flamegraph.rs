@@ -1,11 +1,14 @@
 // Copyright (c) 2025 IOTA Stiftung
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs;
-
 use iota_test_transaction_builder::make_transfer_iota_transaction;
 use test_cluster::TestClusterBuilder;
 use tracing::Instrument as _;
+
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+#[global_allocator]
+static GLOBAL: telemetry_subscribers::flamegraph::CounterAlloc<std::alloc::System> =
+    telemetry_subscribers::flamegraph::CounterAlloc::new(std::alloc::System);
 
 /// This is a binary to generate test flamegraph data in a simple benchmark with
 /// a local test cluster. To run it, use:
@@ -26,26 +29,34 @@ async fn main() {
 
     // follow instructions in telemetry-subscribers README how to setup grafana to
     // visualize the flamegraphs
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&sub.get_nested_sets(
-            "iota-benchmark::flamegraph",
-            true,
-            true
-        ))
-        .unwrap()
-    );
-    println!();
+    let nested_sets = sub.get_nested_sets("iota-benchmark::flamegraph", true, true);
+    println!("{}", serde_json::to_string_pretty(&nested_sets).unwrap());
 
-    let svg = sub
-        .get_combined_svg(
-            "iota-benchmark::flamegraph",
-            true,
-            true,
-            &Default::default(),
-        )
+    use std::io::Write as _;
+
+    #[allow(unused_mut)]
+    let mut config = Default::default();
+
+    std::fs::File::create("flamegraph.svg")
         .unwrap()
-        .into_string();
-    fs::write("flamegraph.svg", &svg).expect("Failed to write flamegraph.svg");
-    println!("Flamegraph written to flamegraph.svg");
+        .write_all(
+            sub.get_combined_svg("iota-benchmark::flamegraph", true, true, &config)
+                .unwrap()
+                .into_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    #[cfg(all(feature = "flamegraph-alloc", nightly))]
+    {
+        config.measure_mem = true;
+        std::fs::File::create("flamegraph-mem.svg")
+            .unwrap()
+            .write_all(
+                sub.get_combined_svg("iota-benchmark::flamegraph", true, true, &config)
+                    .unwrap()
+                    .into_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+    }
 }

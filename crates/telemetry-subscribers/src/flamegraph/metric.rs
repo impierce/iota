@@ -90,15 +90,28 @@ pub struct FlameMetric {
     /// Stopwatch measuring a task's idle pending time.
     pub pending: Stopwatch,
     pub count: CountMetric,
+    #[cfg(all(feature = "flamegraph-alloc", nightly))]
+    pub alloc_current: super::alloc::AllocMetrics,
+    #[cfg(all(feature = "flamegraph-alloc", nightly))]
+    pub alloc_total: super::alloc::AllocMetrics,
 }
 
 impl fmt::Debug for FlameMetric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[cfg(not(all(feature = "flamegraph-alloc", nightly)))]
         {
             write!(
                 f,
                 "[run={:?} pend={:?} {:?}]",
                 self.running, self.pending, self.count
+            )
+        }
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        {
+            write!(
+                f,
+                "[run={:?} pend={:?} {:?} {:?}]",
+                self.running, self.pending, self.count, self.alloc_total
             )
         }
     }
@@ -112,12 +125,21 @@ impl SpanMetrics for FlameMetric {
         self.count.enter(());
         self.pending.try_stop(now);
         self.running.start(now);
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        {
+            self.alloc_current = super::alloc::get_alloc_metrics();
+        }
     }
 
     fn exit(&mut self, now: Clock) {
         self.count.exit(());
         self.running.stop(now);
         self.pending.start(now);
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        {
+            self.alloc_total
+                .merge(super::alloc::get_alloc_metrics().delta(self.alloc_current));
+        }
     }
 }
 
@@ -126,6 +148,8 @@ impl MergeMetrics for FlameMetric {
         self.count.merge(other.count);
         self.running.total += other.running.total;
         self.pending.total += other.pending.total;
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        self.alloc_total.merge(other.alloc_total);
     }
 }
 

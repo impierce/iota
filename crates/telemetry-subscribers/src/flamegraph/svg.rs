@@ -5,12 +5,15 @@ use std::time::Duration;
 
 use iota_flamegraph_svg;
 
-#[derive(Clone, Copy, Debug)]
+use super::{
+    callgraph::{CallGraph, Frame, NodeId},
+    flame::{Flames, FrameLabel, Metadata},
+    metric::{CountMetric, FlameMetric, MergeMetrics, Stopwatch},
+};
+
+#[derive(Clone, Debug)]
 struct Node {
-    title: &'static str,
-    samples: usize,
-    dur: Duration,
-    percent: f64,
+    title: String,
     x: f64,
     y: usize,
     width: f64,
@@ -20,8 +23,8 @@ struct Node {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
-    /// Desired resolution in nanoseconds per pixel.
-    pub resolution_nanos_per_px: Option<u128>,
+    /// Desired resolution in units (nanoseconds, bytes) per pixel.
+    pub resolution_units_per_px: Option<usize>,
     /// Desired width of the SVG in pixels.
     pub width: Option<usize>,
     /// Desired aspect ratio (width, height) of the SVG.
@@ -29,14 +32,19 @@ pub struct Config {
     /// Seed value for random color generation to ensure reproducible flamegraph
     /// colors.
     pub seed: u64,
+    #[cfg(all(feature = "flamegraph-alloc", nightly))]
+    /// Use memory allocations span measure instead of total duration.
+    pub measure_mem: bool,
 }
 impl Default for Config {
     fn default() -> Config {
         Config {
-            resolution_nanos_per_px: None,
+            resolution_units_per_px: None,
             width: Some(1920),
             aspect_ratio: None,
             seed: 1,
+            #[cfg(all(feature = "flamegraph-alloc", nightly))]
+            measure_mem: false,
         }
     }
 }
@@ -53,52 +61,139 @@ impl Svg {
     }
 }
 
-pub trait Renderer {
-    fn raw_svg(&self, raw: &mut Raw, indent: bool);
-    fn render_svg(&self, caption: &str, config: &Config) -> Svg {
-        let mut raw = Raw::default();
-        self.raw_svg(&mut raw, false);
-        raw.render(caption, config)
+trait FromSpanMetrics<S>:
+    for<'a> std::ops::Add<&'a S, Output = Self> + for<'a> std::ops::AddAssign<&'a S>
+{
+}
+
+// Helper trait to abstract over span measure (eg. duration or allocations).
+trait Measure:
+    Clone + Copy + Default + Eq + for<'a> From<&'a Frame<FlameMetric>> + Into<f64> + Sized
+{
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TotalTime(Duration);
+impl std::ops::Add<&FlameMetric> for TotalTime {
+    type Output = Self;
+    fn add(mut self, rhs: &FlameMetric) -> Self {
+        self += rhs;
+        self
     }
 }
-
-use super::{
-    callgraph::{CallGraph, Frame, NodeId},
-    flame::{Flames, FrameLabel, Metadata},
-    metric::{FlameMetric, MergeMetrics, SpanMetrics},
-};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RawNode {
-    label: FrameLabel,
-    samples: usize,
-    start: Duration,
-    total: Duration,
+impl std::ops::AddAssign<&FlameMetric> for TotalTime {
+    fn add_assign(&mut self, rhs: &FlameMetric) {
+        self.0 += rhs.running.total;
+    }
 }
-impl RawNode {
-    fn into_svg<R: rand::Rng>(
+impl FromSpanMetrics<FlameMetric> for TotalTime {}
+impl From<&Frame<FlameMetric>> for TotalTime {
+    fn from(raw: &Frame<FlameMetric>) -> Self {
+        TotalTime(raw.metrics.running.total)
+    }
+}
+impl From<TotalTime> for f64 {
+    fn from(t: TotalTime) -> f64 {
+        t.0.as_nanos() as f64
+    }
+}
+impl Measure for TotalTime {}
+
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TotalMem(usize);
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+impl std::ops::Add<&FlameMetric> for TotalMem {
+    type Output = Self;
+    fn add(mut self, rhs: &FlameMetric) -> Self {
+        self += rhs;
+        self
+    }
+}
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+impl std::ops::AddAssign<&FlameMetric> for TotalMem {
+    fn add_assign(&mut self, rhs: &FlameMetric) {
+        self.0 += rhs.alloc_total.alloc;
+    }
+}
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+impl FromSpanMetrics<FlameMetric> for TotalMem {}
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+impl From<&Frame<FlameMetric>> for TotalMem {
+    fn from(frame: &Frame<FlameMetric>) -> Self {
+        TotalMem(frame.metrics.alloc_total.alloc)
+    }
+}
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+impl From<TotalMem> for f64 {
+    fn from(t: TotalMem) -> f64 {
+        t.0 as f64
+    }
+}
+#[cfg(all(feature = "flamegraph-alloc", nightly))]
+impl Measure for TotalMem {}
+
+impl Frame<FlameMetric> {
+    fn into_node<M: Measure, R: rand::Rng>(
         self,
-        overall: Duration,
+        start: M,
+        overall: M,
         x_scale: f64,
         y: usize,
         rng: &mut R,
     ) -> Node {
-        let RawNode {
+        // start represents an absolute unscaled x coordinate of the span node in svg
+        let x = start.into() * x_scale + 10.0;
+        // width is the span node measure, ie. width in svg
+        let width = M::from(&self);
+        // overall is the measure of the whole flamegraph, represents 100%
+        let percent = width.into() * 100.0 / overall.into();
+        // scale width into pixels
+        let width = width.into() * x_scale;
+        // svg node height is fixed
+        let height = 15;
+
+        let Frame {
             label,
-            samples,
-            start,
-            total,
+            metrics: FlameMetric {
+                count: CountMetric {
+                    // the number of span samples is the number the span was entered
+                    entered: samples,
+                    ..
+                },
+                running: Stopwatch {
+                    // the total duration span was in active/running state
+                    total,
+                    ..
+                },
+                #[cfg(all(feature = "flamegraph-alloc", nightly))]
+                // allocation metrics are accumulated metrics per all span entries
+                alloc_total: alloc,
+                // we do not need the rest of the metrics
+                ..
+            },
         } = self;
+
         let rgb = random_rgb(rng);
+        let dur = total.as_nanos() as f64 / 1_000_000.0;
+        let avg = dur / samples as f64;
+        #[cfg(not(all(feature = "flamegraph-alloc", nightly)))]
+        let title = format!(
+            "{} (#{samples}, dur={dur:.2}ms, avg={avg:.2}ms, {percent:.2}%)",
+            label.name
+        );
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        let title = format!(
+            "{} (#{samples}, dur={dur:.2}ms, avg={avg:.2}ms, {percent:.2}%, {alloc})",
+            label.name,
+        );
+
         Node {
-            title: label.name,
-            samples,
-            dur: total,
-            percent: total.as_nanos() as f64 * 100.0 / overall.as_nanos() as f64,
-            x: start.as_nanos() as f64 * x_scale + 10.0,
+            title,
+            x,
             y,
-            width: total.as_nanos() as f64 * x_scale,
-            height: 15,
+            width,
+            height,
             rgb,
         }
     }
@@ -110,22 +205,17 @@ fn random_rgb<R: rand::Rng>(rng: &mut R) -> (u8, u8, u8) {
     (r, g, b)
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Raw {
-    total: Duration,
-    running: Vec<Vec<RawNode>>,
+#[derive(Clone, Debug, Default)]
+struct Raw<M> {
+    total: M,
+    running: Vec<Vec<(M, Frame<FlameMetric>)>>,
 }
-impl Raw {
-    fn add_node(&mut self, frame: &Frame<FlameMetric>, start: Duration, level: usize) -> Duration {
+impl<M: Measure> Raw<M> {
+    fn add_node(&mut self, frame: Frame<FlameMetric>, start: M, level: usize) -> M {
         if self.running.len() <= level {
             self.running.resize(level + 1, Vec::new());
         }
-        self.running[level].push(RawNode {
-            label: frame.label,
-            samples: frame.metrics.count.entered,
-            start,
-            total: frame.metrics.running.total,
-        });
+        self.running[level].push((start, frame));
         start
     }
     fn render(self, caption: &str, config: &Config) -> Svg {
@@ -135,9 +225,9 @@ impl Raw {
         let height = 33 + num_levels * 16 + 33;
 
         let (x_scale, width) = config
-            .resolution_nanos_per_px // try resolution first
+            .resolution_units_per_px // try resolution first
             .and_then(|r| (r > 0).then_some(r))
-            .map(|r| (1.0 / r as f64, (total.as_nanos() / r) as usize + 20))
+            .map(|r| (1.0 / r as f64, total.into() as usize / r + 20))
             .unwrap_or_else(|| {
                 let w = config
                     .width // try width next
@@ -148,10 +238,10 @@ impl Raw {
                     })
                     .max(100); // minimum width
                 // 10px margin on each side
-                if total.is_zero() {
+                if total == M::default() {
                     (1.0, w)
                 } else {
-                    ((w - 20) as f64 / total.as_nanos() as f64, w)
+                    ((w - 20) as f64 / total.into(), w)
                 }
             });
 
@@ -162,41 +252,79 @@ impl Raw {
             .into_iter()
             .enumerate()
             .flat_map(|(i, row)| row.into_iter().map(move |raw| (raw, i)))
-            .map(|(raw, level)| {
+            .map(|((start, raw), level)| {
                 let y = (num_levels - 1 - level) * 16 + 33;
-                raw.into_svg(total, x_scale, y, &mut rng)
+                raw.into_node(start, total, x_scale, y, &mut rng)
             });
 
         render(caption, width, height, nodes)
     }
 }
 
-impl Renderer for CallGraph<FlameMetric> {
-    fn raw_svg(&self, raw: &mut Raw, indent: bool) {
+impl CallGraph<FlameMetric> {
+    fn raw_svg<M>(&self, raw: &mut Raw<M>)
+    where
+        M: Measure + FromSpanMetrics<FlameMetric>,
+    {
         if !self.graph.is_empty() {
             let start = raw.total;
-            let root_metrics = self.graph[NodeId::default()].value.metrics;
-            raw.total += root_metrics.running.total;
+            let root_metrics = &self.graph[NodeId::default()].value.metrics;
+            raw.total += root_metrics;
 
             self.graph.dfs_fold2(
                 raw,
                 || start,
                 |svg_raw, start, node_id, level| {
-                    svg_raw.add_node(&self.graph[node_id].value, start, level + indent as usize)
+                    svg_raw.add_node(self.graph[node_id].value, start, level)
                 },
                 |_, start, node_id| {
-                    let metrics = self.graph[node_id].value.metrics;
-                    *start + metrics.running.total
+                    let metrics = &self.graph[node_id].value.metrics;
+                    *start + metrics
                 },
             );
         }
     }
+    fn render_svg_with_measure<M>(&self, caption: &str, config: &Config) -> Svg
+    where
+        M: Measure + FromSpanMetrics<FlameMetric>,
+    {
+        let mut raw = Raw::<M>::default();
+        self.raw_svg(&mut raw);
+        raw.render(caption, config)
+    }
+    fn render_svg(&self, caption: &str, config: &Config) -> Svg {
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        {
+            if config.measure_mem {
+                self.render_svg_with_measure::<TotalMem>(caption, config)
+            } else {
+                self.render_svg_with_measure::<TotalTime>(caption, config)
+            }
+        }
+        #[cfg(not(all(feature = "flamegraph-alloc", nightly)))]
+        {
+            self.render_svg_with_measure::<TotalTime>(caption, config)
+        }
+    }
 }
 
-impl<S: Clone + Default + MergeMetrics + SpanMetrics> Flames<S>
-where
-    CallGraph<S>: Renderer,
-{
+fn append_type_suffix(label: &str, config: &Config) -> String {
+    #[cfg(all(feature = "flamegraph-alloc", nightly))]
+    {
+        if config.measure_mem {
+            format!("{label} (memory)")
+        } else {
+            format!("{label} (time)")
+        }
+    }
+    #[cfg(not(all(feature = "flamegraph-alloc", nightly)))]
+    {
+        let _ = config;
+        format!("{label} (time)")
+    }
+}
+
+impl Flames<FlameMetric> {
     pub fn render_svg(
         &self,
         graph_id: &Metadata<'_>,
@@ -204,8 +332,46 @@ where
         completed: bool,
         config: &Config,
     ) -> Option<Svg> {
+        let caption = &append_type_suffix(graph_id.caption, config);
+
         self.get_callgraph(graph_id, running, completed)
-            .map(|callgraph| callgraph.render_svg(graph_id.caption, config))
+            .map(|callgraph| callgraph.render_svg(caption, config))
+    }
+    fn render_combined_svg_with_measure<M>(
+        &self,
+        caption: &str,
+        running: bool,
+        completed: bool,
+        config: &Config,
+    ) -> Option<Svg>
+    where
+        M: Measure + FromSpanMetrics<FlameMetric>,
+    {
+        let mut raw = self.get_callgraphs(running, completed).values().fold(
+            Raw::<M>::default(),
+            |mut raw, callgraph| {
+                callgraph.raw_svg(&mut raw);
+                raw
+            },
+        );
+        if raw.running.is_empty() {
+            // no data at all
+            None
+        } else {
+            // aggregate level 0 nodes into one
+            let mut root: Frame<FlameMetric> = Frame {
+                label: FrameLabel { name: "all" },
+                ..Default::default()
+            };
+            root.metrics.count.entered += 1;
+            let level0 = raw.running.first().unwrap();
+            for (_, node) in level0 {
+                root.metrics.merge(node.metrics);
+            }
+            // insert the root node at level 0 and shift other nodes 1 level up
+            raw.running.insert(0, vec![(Default::default(), root)]);
+            Some(raw.render(caption, config))
+        }
     }
     pub fn render_combined_svg(
         &self,
@@ -214,23 +380,23 @@ where
         completed: bool,
         config: &Config,
     ) -> Option<Svg> {
-        let mut raw = self.get_callgraphs(running, completed).values().fold(
-            Raw::default(),
-            |mut raw, callgraph| {
-                callgraph.raw_svg(&mut raw, true);
-                raw
-            },
-        );
-        if raw.total.is_zero() || raw.running.is_empty() {
-            None
-        } else {
-            raw.running[0].push(RawNode {
-                label: FrameLabel { name: "all" },
-                samples: 1,
-                start: Default::default(),
-                total: raw.total,
-            });
-            Some(raw.render(caption, config))
+        let caption = &append_type_suffix(caption, config);
+
+        #[cfg(all(feature = "flamegraph-alloc", nightly))]
+        {
+            if config.measure_mem {
+                self.render_combined_svg_with_measure::<TotalMem>(
+                    caption, running, completed, config,
+                )
+            } else {
+                self.render_combined_svg_with_measure::<TotalTime>(
+                    caption, running, completed, config,
+                )
+            }
+        }
+        #[cfg(not(all(feature = "flamegraph-alloc", nightly)))]
+        {
+            self.render_combined_svg_with_measure::<TotalTime>(caption, running, completed, config)
         }
     }
 }
@@ -272,9 +438,6 @@ fn render(caption: &str, width: usize, height: usize, nodes: impl Iterator<Item 
     nodes.for_each(|n| {
         let Node {
             title,
-            samples,
-            dur,
-            percent,
             x,
             y,
             width: node_width,

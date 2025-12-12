@@ -10,6 +10,9 @@ description = "Library for common telemetry and observability functionality"
 [lints]
 workspace = true
 
+[features]
+flamegraph-alloc = []
+
 [dependencies]
 # external dependencies
 atomic_float = "1.0"
@@ -39,6 +42,9 @@ tracing-subscriber.workspace = true
 
 # internal dependencies
 iota-flamegraph-svg = { git = "https://github.com/iotaledger/flamegraph-svg", rev = "ba681350dc9a72c9bae493b93840bdfbc01d0bbe" }
+
+[build-dependencies]
+rustc_version_runtime = "0.3"
 
 [dev-dependencies]
 camino.workspace = true

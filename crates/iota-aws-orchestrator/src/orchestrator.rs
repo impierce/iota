@@ -612,12 +612,28 @@ impl<P: ProtocolCommands<T> + ProtocolMetrics, T: BenchmarkType> Orchestrator<P,
         if self.settings.enable_flamegraph {
             self.fetch_flamegraphs(
                 parameters,
-                self.node_instances.clone(),
+                self.instances_without_metrics().clone(),
                 &path,
                 "?svg=true",
                 "flamegraph",
             )
             .await?;
+
+            if self
+                .settings
+                .build_configs
+                .get("iota-node")
+                .is_some_and(|config| config.features.iter().any(|f| f == "flamegraph-alloc"))
+            {
+                self.fetch_flamegraphs(
+                    parameters,
+                    self.instances_without_metrics().clone(),
+                    &path,
+                    "?svg=true&mem=true",
+                    "flamegraph-alloc",
+                )
+                .await?;
+            }
         }
 
         display::done();
