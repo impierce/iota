@@ -2404,8 +2404,8 @@ impl ProtocolConfig {
                         cfg.feature_flags.publish_package_metadata = true;
                         // Enable Move authentication in devnet
                         cfg.feature_flags.enable_move_authentication = true;
-                        // Max auth gas budget is in NANOS and an absolute value 1IOTA
-                        cfg.max_auth_gas = Some(1_000_000_000);
+                        // Max auth gas budget is in NANOS and an absolute value 0.25 IOTA
+                        cfg.max_auth_gas = Some(250_000_000);
                     }
                 }
                 // Use this template when making changes:
