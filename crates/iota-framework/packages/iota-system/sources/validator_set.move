@@ -162,8 +162,8 @@ const EValidatorSetEmpty: u64 = 13;
 const ENotACommitteeValidator: u64 = 14;
 const EInvalidStakeAmount: u64 = 15;
 const EInvalidEligibleValidatorIndex: u64 = 16;
-const EInvalidRewardAdjustmentData: u64 = 19;
-const EInvalidScoresData: u64 = 20;
+const EInvalidRewardAdjustmentData: u64 = 17;
+const EInvalidScoresData: u64 = 18;
 
 const EInvalidCap: u64 = 101;
 
@@ -1439,7 +1439,7 @@ fun emit_validator_epoch_events(
             vector[]
         };
         let mut committee_member_index = committee_members.find_index!(|c| c == i);
-        let tallying_rule_global_score = if (slashed_validators.contains(&validator_address) || !committee_member_index.is_some()) 0
+        let tallying_rule_global_score = if (slashed_validators.contains(&validator_address) || committee_member_index.is_none()) 0
         else scores[committee_member_index.extract()];
         let pool_staking_reward = if (committee_member_index.is_some()) {
             // prepare event for a committee validator
