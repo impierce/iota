@@ -15,12 +15,15 @@ use iota_types::{
     base_types::{ObjectID, VersionNumber},
     committee::Committee,
     digests::{ChainIdentifier, TransactionDigest, TransactionEventsDigest},
-    effects::{TransactionEffects, TransactionEvents},
-    full_checkpoint_content::CheckpointData,
+    effects::{TransactionEffects, TransactionEffectsAPI, TransactionEvents},
+    full_checkpoint_content::{CheckpointData, CheckpointTransaction},
     iota_system_state::{IotaSystemState, IotaSystemStateTrait},
-    messages_checkpoint::CertifiedCheckpointSummary,
+    messages_checkpoint::{CertifiedCheckpointSummary, CheckpointContents},
     object::Object,
-    storage::{EpochInfo, ReadStore, RestStateReader},
+    storage::{
+        EpochInfo, ReadStore, RestStateReader, get_transaction_input_objects,
+        get_transaction_output_objects,
+    },
     transaction::VerifiedTransaction,
 };
 use move_core_types::annotated_value::MoveTypeLayout;
@@ -39,6 +42,26 @@ impl SimulacrumGrpcReader {
             simulacrum,
             chain_id,
         }
+    }
+
+    /// Try to get the system state for a specific epoch.
+    /// This method retrieves historical system state data if available.
+    fn get_system_state_for_epoch(&self, epoch: u64) -> Result<IotaSystemState> {
+        self.simulacrum.with_store(|store| {
+            // First try to get historical system state for the requested epoch
+            if let Some(historical_state) = store.get_system_state_by_epoch(epoch) {
+                return Ok(historical_state.clone());
+            }
+
+            // If we're asking for the current epoch, return current system state
+            let current_system_state = store.get_system_state();
+            if epoch == current_system_state.epoch() {
+                return Ok(current_system_state);
+            }
+
+            // Historical system state not found
+            Err(anyhow::anyhow!("Historical system state for epoch {} not available. System states are only stored when epochs end.", epoch))
+        })
     }
 }
 
@@ -61,6 +84,17 @@ impl GrpcStateReader for SimulacrumGrpcReader {
                 .get_checkpoint_by_sequence_number(seq)
                 .cloned()
                 .map(CertifiedCheckpointSummary::from)
+        })
+    }
+
+    fn get_checkpoint_sequence_number_by_digest(
+        &self,
+        digest: &iota_types::digests::CheckpointDigest,
+    ) -> Option<u64> {
+        self.simulacrum.with_store(|store| {
+            store
+                .get_checkpoint_by_digest(digest)
+                .map(|checkpoint| *checkpoint.sequence_number())
         })
     }
 
@@ -123,24 +157,48 @@ impl GrpcStateReader for SimulacrumGrpcReader {
     fn get_epoch_info(&self, epoch: u64) -> Option<EpochInfo> {
         self.simulacrum.with_store(|store| {
             // Get the start checkpoint of the epoch
-            let start_checkpoint_seq = store
-                .get_last_checkpoint_of_epoch(epoch - 1)
-                .map(|seq| seq + 1)
-                .unwrap_or(0);
+            let start_checkpoint_seq = if epoch != 0 {
+                store
+                    .get_last_checkpoint_of_epoch(epoch - 1)
+                    .map(|seq| Some(seq + 1))
+                    .unwrap_or(None)?
+            } else {
+                0
+            };
 
             let start_checkpoint = store
                 .get_checkpoint_by_sequence_number(start_checkpoint_seq)
                 .cloned()?;
 
-            let system_state = store.get_system_state();
+            // Try to get the system state for the specific epoch
+            let system_state = self
+                .get_system_state_for_epoch(epoch)
+                .expect("valid system state should exist");
+
+            // Try to get the next epoch's system state to determine if current epoch is
+            // completed
+            let (end_timestamp_ms, end_checkpoint) =
+                if let Ok(next_epoch_state) = self.get_system_state_for_epoch(epoch + 1) {
+                    (
+                        Some(next_epoch_state.epoch_start_timestamp_ms()),
+                        Some(
+                            store
+                                .get_last_checkpoint_of_epoch(epoch)
+                                .expect("last checkpoint of completed epoch should exist"),
+                        ),
+                    )
+                } else {
+                    // Next epoch doesn't exist, so this epoch is current or incomplete
+                    (None, None)
+                };
 
             Some(EpochInfo {
                 epoch,
                 protocol_version: system_state.protocol_version(),
                 start_timestamp_ms: start_checkpoint.data().timestamp_ms,
-                end_timestamp_ms: None,
+                end_timestamp_ms,
                 start_checkpoint: start_checkpoint_seq,
-                end_checkpoint: None,
+                end_checkpoint,
                 reference_gas_price: system_state.reference_gas_price(),
                 system_state,
             })
@@ -194,6 +252,67 @@ impl GrpcStateReader for SimulacrumGrpcReader {
                 }
             }
             None
+        })
+    }
+
+    fn get_checkpoint_summary_and_contents(
+        &self,
+        seq: u64,
+    ) -> Option<(CertifiedCheckpointSummary, CheckpointContents)> {
+        self.simulacrum.with_store(|store| {
+            let checkpoint = store.get_checkpoint_by_sequence_number(seq).cloned()?;
+            let contents = store
+                .get_checkpoint_contents(&checkpoint.content_digest)
+                .cloned()?;
+            Some((CertifiedCheckpointSummary::from(checkpoint), contents))
+        })
+    }
+
+    fn stream_checkpoint_transactions(
+        &self,
+        checkpoint_contents: CheckpointContents,
+    ) -> std::pin::Pin<
+        Box<dyn futures::Stream<Item = anyhow::Result<CheckpointTransaction>> + Send + '_>,
+    > {
+        self.simulacrum.with_store(|store| {
+            let transactions: Vec<anyhow::Result<CheckpointTransaction>> = checkpoint_contents
+                .iter()
+                .map(|exec_digests| {
+                    let verified_transaction = store
+                        .get_transaction(&exec_digests.transaction)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Transaction not found: {}", exec_digests.transaction)
+                        })?;
+                    let transaction = verified_transaction.clone().into();
+                    let effects = store
+                        .get_transaction_effects(&exec_digests.transaction)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Effects not found: {}", exec_digests.transaction)
+                        })?
+                        .clone();
+
+                    // Get events from effects if they exist
+                    let events = effects.events_digest().and_then(|events_digest| {
+                        store.get_transaction_events(events_digest).cloned()
+                    });
+
+                    // Extract input and output objects
+                    let input_objects =
+                        get_transaction_input_objects(store, &effects).unwrap_or_else(|_| vec![]);
+                    let output_objects =
+                        get_transaction_output_objects(store, &effects).unwrap_or_else(|_| vec![]);
+
+                    Ok(CheckpointTransaction {
+                        transaction,
+                        effects,
+                        events,
+                        input_objects,
+                        output_objects,
+                    })
+                })
+                .collect();
+
+            Box::pin(futures::stream::iter(transactions))
         })
     }
 }

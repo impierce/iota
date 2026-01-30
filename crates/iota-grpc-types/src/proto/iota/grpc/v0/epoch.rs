@@ -4,7 +4,6 @@
 
 include!("../../../generated/iota.grpc.v0.epoch.rs");
 include!("../../../generated/iota.grpc.v0.epoch.field_info.rs");
-include!("../../../generated/iota.grpc.v0.epoch.accessors.rs");
 
 use tap::Pipe;
 
@@ -217,5 +216,32 @@ impl From<&iota_types::committee::Committee> for ValidatorCommittee {
                 members: members_vec,
             }),
         }
+    }
+}
+
+impl Epoch {
+    pub fn committee(
+        &self,
+    ) -> Result<iota_sdk_types::ValidatorCommittee, crate::proto::TryFromProtoError> {
+        match &self.committee {
+            Some(committee) => Ok(committee.try_into()?),
+            None => Err(crate::proto::TryFromProtoError::missing("committee")),
+        }
+    }
+}
+
+impl ValidatorCommittee {
+    pub fn validator_committee(
+        &self,
+    ) -> Result<iota_sdk_types::ValidatorCommittee, crate::proto::TryFromProtoError> {
+        self.try_into()
+    }
+}
+
+impl ValidatorCommitteeMember {
+    pub fn committee_member(
+        &self,
+    ) -> Result<iota_sdk_types::ValidatorCommitteeMember, crate::proto::TryFromProtoError> {
+        self.try_into()
     }
 }

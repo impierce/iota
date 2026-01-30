@@ -7,13 +7,14 @@ use iota_test_transaction_builder::TestTransactionBuilder;
 use iota_types::base_types::IotaAddress;
 use tonic::Code;
 
-use super::common::{
-    assert_grpc_error, create_transaction_for_simulation, is_success, setup_grpc_test,
+use super::{
+    super::utils::setup_grpc_test,
+    common::{assert_grpc_error, create_transaction_for_simulation, is_success},
 };
 
 #[sim_test]
 async fn simulate_transaction_scenarios() {
-    let (test_cluster, client) = setup_grpc_test(1).await;
+    let (test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
     // Test: regular and dev-inspect simulation modes
     for (dev_inspect, mode_name) in [(false, "regular"), (true, "dev-inspect")] {
@@ -24,12 +25,15 @@ async fn simulate_transaction_scenarios() {
             .await
             .unwrap_or_else(|e| panic!("Failed to simulate transaction in {mode_name} mode: {e}"));
 
+        let effects = result
+            .effects()
+            .expect("Failed to get effects from simulation result");
         assert!(
-            is_success(result.effects.status()),
+            is_success(effects.status()),
             "{mode_name} simulation should succeed"
         );
 
-        let gas_summary = result.effects.gas_summary();
+        let gas_summary = effects.gas_summary();
         assert!(
             gas_summary.computation_cost > 0 || gas_summary.storage_cost > 0,
             "{mode_name} simulation should report gas costs"
@@ -42,8 +46,13 @@ async fn simulate_transaction_scenarios() {
         .simulate_transaction(transaction, false, Some("transaction.effects"))
         .await
         .expect("Failed to simulate transaction with minimal mask");
+
+    let effects = result
+        .effects()
+        .expect("Failed to get effects from simulation result with minimal mask");
+
     assert!(
-        is_success(result.effects.status()),
+        is_success(effects.status()),
         "Effects should be present with minimal mask"
     );
 
@@ -85,8 +94,13 @@ async fn simulate_transaction_scenarios() {
         .simulate_transaction(transaction, false, None)
         .await
         .expect("Simulation should succeed at RPC level");
+
+    let effects = response
+        .effects()
+        .expect("Failed to get SDK effects from simulation result");
+
     assert!(
-        !is_success(response.effects.status()),
+        !is_success(effects.status()),
         "Effects should show failure due to insufficient balance"
     );
 }

@@ -4,7 +4,8 @@
 
 include!("../../../generated/iota.grpc.v0.checkpoint.rs");
 include!("../../../generated/iota.grpc.v0.checkpoint.field_info.rs");
-include!("../../../generated/iota.grpc.v0.checkpoint.accessors.rs");
+
+use serde::{Deserialize, Serialize};
 
 use crate::{field::FieldMaskTree, merge::Merge, proto::TryFromProtoError, v0::bcs::BcsData};
 
@@ -45,12 +46,12 @@ impl Merge<&CheckpointSummary> for CheckpointSummary {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let CheckpointSummary { bcs, digest } = source;
 
-        if mask.contains(Self::BCS_FIELD.name) {
-            self.bcs = bcs.clone();
-        }
-
         if mask.contains(Self::DIGEST_FIELD.name) {
             self.digest = digest.clone();
+        }
+
+        if mask.contains(Self::BCS_FIELD.name) {
+            self.bcs = bcs.clone();
         }
 
         Ok(())
@@ -68,6 +69,13 @@ impl TryFrom<&CheckpointSummary> for iota_sdk_types::CheckpointSummary {
             .ok_or_else(|| TryFromProtoError::missing(CheckpointSummary::BCS_FIELD.name))?;
         BcsData::deserialize(bcs)
             .map_err(|e| TryFromProtoError::invalid(CheckpointSummary::BCS_FIELD, e))
+    }
+}
+
+impl CheckpointSummary {
+    /// Deserialize checkpoint summary.
+    pub fn summary(&self) -> Result<iota_sdk_types::CheckpointSummary, TryFromProtoError> {
+        self.try_into()
     }
 }
 
@@ -89,6 +97,7 @@ impl Merge<iota_sdk_types::CheckpointContents> for CheckpointContents {
         mask: &FieldMaskTree,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if mask.contains(Self::BCS_FIELD.name) {
+            // TODO: add version
             self.bcs = BcsData::serialize(&source).ok();
         }
 
@@ -128,8 +137,16 @@ impl TryFrom<&CheckpointContents> for iota_sdk_types::CheckpointContents {
             .bcs
             .as_ref()
             .ok_or_else(|| TryFromProtoError::missing(CheckpointContents::BCS_FIELD.name))?;
+        // TODO: add version
         BcsData::deserialize(bcs)
             .map_err(|e| TryFromProtoError::invalid(CheckpointContents::BCS_FIELD, e))
+    }
+}
+
+impl CheckpointContents {
+    /// Deserialize checkpoint contents.
+    pub fn contents(&self) -> Result<iota_sdk_types::CheckpointContents, TryFromProtoError> {
+        self.try_into()
     }
 }
 
@@ -142,10 +159,6 @@ impl Merge<&iota_sdk_types::CheckpointSummary> for Checkpoint {
         source: &iota_sdk_types::CheckpointSummary,
         mask: &FieldMaskTree,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if mask.contains(Self::SEQUENCE_NUMBER_FIELD.name) {
-            self.sequence_number = Some(source.sequence_number);
-        }
-
         if let Some(submask) = mask.subtree(Self::SUMMARY_FIELD.name) {
             self.summary = Some(CheckpointSummary::merge_from(source.clone(), &submask)?);
         }
@@ -221,14 +234,42 @@ impl Merge<&Checkpoint> for Checkpoint {
     }
 }
 
-// TODO: we need to reconsider this design
+impl Checkpoint {
+    /// Deserialize checkpoint summary.
+    pub fn summary(&self) -> Result<Option<iota_sdk_types::CheckpointSummary>, TryFromProtoError> {
+        self.summary
+            .as_ref()
+            .map(|s| s.summary().map_err(|e| e.nested(Self::SUMMARY_FIELD.name)))
+            .transpose()
+    }
 
-use serde::{Deserialize, Serialize};
+    /// Deserialize checkpoint contents.
+    pub fn contents(
+        &self,
+    ) -> Result<Option<iota_sdk_types::CheckpointContents>, TryFromProtoError> {
+        self.contents
+            .as_ref()
+            .map(|c| {
+                c.contents()
+                    .map_err(|e| e.nested(Self::CONTENTS_FIELD.name))
+            })
+            .transpose()
+    }
 
-/// Forward-compatible versioned checkpoint data for gRPC streaming.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum CheckpointData {
-    V1(iota_types::full_checkpoint_content::CheckpointData),
+    /// Deserialize validator signature.
+    pub fn signature(
+        &self,
+    ) -> Result<Option<iota_sdk_types::ValidatorAggregatedSignature>, TryFromProtoError> {
+        self.signature
+            .as_ref()
+            .map(|s| {
+                <&super::signatures::ValidatorAggregatedSignature as TryInto<
+                    iota_sdk_types::ValidatorAggregatedSignature,
+                >>::try_into(s)
+                .map_err(|e: TryFromProtoError| e.nested(Self::SIGNATURE_FIELD.name))
+            })
+            .transpose()
+    }
 }
 
 /// Forward-compatible versioned checkpoint summary for gRPC streaming.
@@ -237,17 +278,47 @@ pub enum CertifiedCheckpointSummary {
     V1(iota_types::messages_checkpoint::CertifiedCheckpointSummary),
 }
 
-impl From<iota_types::full_checkpoint_content::CheckpointData> for CheckpointData {
-    fn from(data: iota_types::full_checkpoint_content::CheckpointData) -> Self {
-        Self::V1(data)
-    }
-}
-
 impl From<iota_types::messages_checkpoint::CertifiedCheckpointSummary>
     for CertifiedCheckpointSummary
 {
     fn from(summary: iota_types::messages_checkpoint::CertifiedCheckpointSummary) -> Self {
         Self::V1(summary)
+    }
+}
+
+impl CertifiedCheckpointSummary {
+    /// Extract the V1 checkpoint summary, returning None for unknown versions
+    pub fn into_v1(self) -> Option<iota_types::messages_checkpoint::CertifiedCheckpointSummary> {
+        match self {
+            Self::V1(summary) => Some(summary),
+        }
+    }
+
+    /// Get a reference to the V1 checkpoint summary, returning None for unknown
+    /// versions
+    pub fn as_v1(&self) -> Option<&iota_types::messages_checkpoint::CertifiedCheckpointSummary> {
+        match self {
+            Self::V1(summary) => Some(summary),
+        }
+    }
+
+    /// Get the sequence number regardless of version
+    pub fn sequence_number(&self) -> u64 {
+        match self {
+            Self::V1(summary) => summary.data().sequence_number,
+        }
+    }
+}
+
+/// Forward-compatible versioned checkpoint data for gRPC streaming.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum CheckpointData {
+    V1(iota_types::full_checkpoint_content::CheckpointData),
+}
+
+impl From<iota_types::full_checkpoint_content::CheckpointData> for CheckpointData {
+    fn from(data: iota_types::full_checkpoint_content::CheckpointData) -> Self {
+        Self::V1(data)
     }
 }
 
@@ -275,26 +346,32 @@ impl CheckpointData {
     }
 }
 
-impl CertifiedCheckpointSummary {
-    /// Extract the V1 checkpoint summary, returning None for unknown versions
-    pub fn into_v1(self) -> Option<iota_types::messages_checkpoint::CertifiedCheckpointSummary> {
-        match self {
-            Self::V1(summary) => Some(summary),
-        }
-    }
+/// Forward-compatible versioned checkpoint transaction for gRPC streaming.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum CheckpointTransaction {
+    V1(iota_types::full_checkpoint_content::CheckpointTransaction),
+}
 
-    /// Get a reference to the V1 checkpoint summary, returning None for unknown
+impl From<iota_types::full_checkpoint_content::CheckpointTransaction> for CheckpointTransaction {
+    fn from(tx: iota_types::full_checkpoint_content::CheckpointTransaction) -> Self {
+        Self::V1(tx)
+    }
+}
+
+impl CheckpointTransaction {
+    /// Extract the V1 checkpoint transaction, returning None for unknown
     /// versions
-    pub fn as_v1(&self) -> Option<&iota_types::messages_checkpoint::CertifiedCheckpointSummary> {
+    pub fn into_v1(self) -> Option<iota_types::full_checkpoint_content::CheckpointTransaction> {
         match self {
-            Self::V1(summary) => Some(summary),
+            Self::V1(tx) => Some(tx),
         }
     }
 
-    /// Get the sequence number regardless of version
-    pub fn sequence_number(&self) -> u64 {
+    /// Get a reference to the V1 checkpoint transaction, returning None for
+    /// unknown versions
+    pub fn as_v1(&self) -> Option<&iota_types::full_checkpoint_content::CheckpointTransaction> {
         match self {
-            Self::V1(summary) => summary.data().sequence_number,
+            Self::V1(tx) => Some(tx),
         }
     }
 }

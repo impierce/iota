@@ -16,8 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 use crate::{
-    GrpcCheckpointDataBroadcaster, GrpcCheckpointSummaryBroadcaster, GrpcReader, LedgerGrpcService,
-    TransactionExecutionGrpcService,
+    GrpcCheckpointDataBroadcaster, GrpcReader, LedgerGrpcService, TransactionExecutionGrpcService,
 };
 
 /// Handle to control a running gRPC server
@@ -26,8 +25,6 @@ pub struct GrpcServerHandle {
     pub server_handle: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
     /// Shutdown signal sender
     shutdown_token: CancellationToken,
-    /// Broadcaster for checkpoint summaries
-    pub checkpoint_summary_broadcaster: GrpcCheckpointSummaryBroadcaster,
     /// Broadcaster for checkpoint data
     pub checkpoint_data_broadcaster: GrpcCheckpointDataBroadcaster,
     /// Actual server address (with resolved port)
@@ -49,11 +46,6 @@ impl GrpcServerHandle {
         self.address
     }
 
-    /// Get a reference to the checkpoint summary broadcaster
-    pub fn checkpoint_summary_broadcaster(&self) -> &GrpcCheckpointSummaryBroadcaster {
-        &self.checkpoint_summary_broadcaster
-    }
-
     /// Get a reference to the checkpoint data broadcaster
     pub fn checkpoint_data_broadcaster(&self) -> &GrpcCheckpointDataBroadcaster {
         &self.checkpoint_data_broadcaster
@@ -68,27 +60,22 @@ impl GrpcServerHandle {
 /// services in the future.
 pub async fn start_grpc_server(
     grpc_reader: Arc<GrpcReader>,
-    _event_subscriber: Arc<dyn crate::EventSubscriber>, // TODO: still needed?
     executor: Option<Arc<dyn TransactionExecutor>>,
     config: iota_config::node::GrpcApiConfig,
     shutdown_token: CancellationToken,
     chain_id: iota_types::digests::ChainIdentifier,
 ) -> Result<GrpcServerHandle> {
     // Create broadcast channels
-    let (checkpoint_summary_tx, _) = broadcast::channel(config.checkpoint_broadcast_buffer_size);
-    let (checkpoint_data_tx, _) = broadcast::channel(config.checkpoint_broadcast_buffer_size);
+    let (checkpoint_data_tx, _) = broadcast::channel(config.broadcast_buffer_size as usize);
 
     // Create broadcasters
-    let checkpoint_summary_broadcaster =
-        GrpcCheckpointSummaryBroadcaster::new(checkpoint_summary_tx);
     let checkpoint_data_broadcaster = GrpcCheckpointDataBroadcaster::new(checkpoint_data_tx);
 
     // Create the gRPC services - get the cancellation token directly from
     // server level
     let ledger_service = LedgerGrpcService::new(
-        grpc_reader.clone(),
         config.clone(),
-        checkpoint_summary_broadcaster.clone(),
+        grpc_reader.clone(),
         checkpoint_data_broadcaster.clone(),
         shutdown_token.clone(),
         chain_id,
@@ -96,7 +83,7 @@ pub async fn start_grpc_server(
 
     // Create TransactionExecutionService if executor is provided
     let tx_service = executor.map(|executor| {
-        TransactionExecutionGrpcService::new(grpc_reader.clone(), executor, config.clone())
+        TransactionExecutionGrpcService::new(config.clone(), grpc_reader.clone(), executor)
     });
 
     // Bind to the address to get the actual local address (especially important for
@@ -136,14 +123,17 @@ pub async fn start_grpc_server(
             .map_err(|e| anyhow::anyhow!("failed to configure TLS: {}", e))?;
     }
 
-    // Add services to the router
+    // Add services to the router and configure services with
+    // message size limits
     let mut router = router_builder.add_service(
-        grpc_ledger_service::ledger_service_server::LedgerServiceServer::new(ledger_service),
+        grpc_ledger_service::ledger_service_server::LedgerServiceServer::new(ledger_service)
+            .max_encoding_message_size(config.max_message_size_bytes() as usize),
     );
 
     if let Some(tx_service) = tx_service {
         router = router.add_service(
-            grpc_tx_service::transaction_execution_service_server::TransactionExecutionServiceServer::new(tx_service),
+            grpc_tx_service::transaction_execution_service_server::TransactionExecutionServiceServer::new(tx_service)
+            .max_encoding_message_size(config.max_message_size_bytes() as usize),
         );
     }
 
@@ -179,7 +169,6 @@ pub async fn start_grpc_server(
     Ok(GrpcServerHandle {
         server_handle,
         shutdown_token,
-        checkpoint_summary_broadcaster,
         checkpoint_data_broadcaster,
         address: actual_addr,
     })

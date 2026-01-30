@@ -123,7 +123,6 @@ use iota_types::{
         IotaSystemState, IotaSystemStateTrait,
         epoch_start_iota_system_state::{EpochStartSystemState, EpochStartSystemStateTrait},
     },
-    messages_checkpoint::CertifiedCheckpointSummary,
     messages_consensus::{
         AuthorityCapabilitiesV1, ConsensusTransaction, ConsensusTransactionKind,
         SignedAuthorityCapabilitiesV1, check_total_jwk_size,
@@ -1771,16 +1770,6 @@ impl IotaNode {
             );
 
             // Create closures that handle gRPC type conversion
-            let summary_sender = if let Ok(guard) = self.grpc_server_handle.try_lock() {
-                guard.as_ref().map(|handle| {
-                    let tx = handle.checkpoint_summary_broadcaster().clone();
-                    Box::new(move |summary: &CertifiedCheckpointSummary| {
-                        tx.send_traced(summary);
-                    }) as Box<dyn Fn(&CertifiedCheckpointSummary) + Send + Sync>
-                })
-            } else {
-                None
-            };
             let data_sender = if let Ok(guard) = self.grpc_server_handle.try_lock() {
                 guard.as_ref().map(|handle| {
                     let tx = handle.checkpoint_data_broadcaster().clone();
@@ -1800,7 +1789,6 @@ impl IotaNode {
                 self.backpressure_manager.clone(),
                 self.config.checkpoint_executor_config.clone(),
                 checkpoint_executor_metrics.clone(),
-                summary_sender,
                 data_sender,
             );
 
@@ -2459,15 +2447,10 @@ async fn build_grpc_server(
         Some(env!("CARGO_PKG_VERSION").to_string()),
     ));
 
-    // Get the subscription handler from the state for event streaming
-    let event_subscriber =
-        state.subscription_handler.clone() as Arc<dyn iota_grpc_server::EventSubscriber>;
-
     // Pass the same token to both GrpcReader (already done above) and
     // start_grpc_server
     let handle = start_grpc_server(
         grpc_reader,
-        event_subscriber,
         executor,
         grpc_config.clone(),
         shutdown_token,

@@ -16,6 +16,8 @@ mod generate_fields;
 mod ident;
 mod message_graph;
 
+const GENERATE_ACCESSORS: bool = false;
+
 fn main() {
     let root_dir = PathBuf::from(std::env!("CARGO_MANIFEST_DIR"));
 
@@ -61,13 +63,7 @@ fn main() {
     fds.file.sort_by(|a, b| a.name.cmp(&b.name));
 
     // Define boxing configuration for prost-build
-    let boxed_types_prost = vec![
-        // TODO: should we box all bcs types?
-        ".iota.grpc.v0.epoch.Epoch.bcs_system_state".to_string(),
-        ".iota.grpc.v0.ledger_service.TransactionResult.result.transaction".to_string(),
-        "json_contents".to_string(),
-        "json".to_string(),
-    ];
+    let boxed_types_prost = vec![];
 
     // for field info and accessor generation
     let boxed_types_field_info = vec![
@@ -146,10 +142,19 @@ fn main() {
     }
 
     // Setup for extended codegen
-    let extern_paths = context::extern_paths::ExternPaths::new(&[], true).unwrap();
-    let graph = DescriptorGraph::new(fds.file.iter());
-    let context = context::Context::new(extern_paths, graph);
-    codegen::accessors::generate_accessors(&context, &out_dir, &boxed_types_accessor);
+    if GENERATE_ACCESSORS {
+        let extern_paths = context::extern_paths::ExternPaths::new(&[], true).unwrap();
+        let files = fds
+            .file
+            .clone()
+            .into_iter()
+            // Filter files, there should only be accessors for google.rpc package
+            .filter(|file| file.package().starts_with("google.rpc"))
+            .collect::<Vec<_>>();
+        let graph = DescriptorGraph::new(files.iter());
+        let context = context::Context::new(extern_paths, graph);
+        codegen::accessors::generate_accessors(&context, &out_dir, &boxed_types_accessor);
+    }
 
     // Group files by package for field info generation
     let mut packages: HashMap<String, FileDescriptorWithPackageVersion> = HashMap::new();

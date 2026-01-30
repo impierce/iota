@@ -4,14 +4,14 @@
 use iota_macros::sim_test;
 use iota_sdk_types::ObjectId;
 
-use super::common::{assert_server_not_found, setup_grpc_test};
+use super::{super::utils::setup_grpc_test, common::assert_server_not_found};
 
 /// System package IDs that are always available.
 const SYSTEM_PACKAGE_IDS: [&str; 3] = ["0x1", "0x2", "0x3"];
 
 #[sim_test]
 async fn get_objects_scenarios() {
-    let (_test_cluster, client) = setup_grpc_test(1).await;
+    let (_test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
     // Test: get single object
     let object_id: ObjectId = "0x2".parse().expect("Invalid object ID");
@@ -21,7 +21,11 @@ async fn get_objects_scenarios() {
         .expect("Failed to get object");
     assert_eq!(objects.len(), 1, "Expected exactly one object");
     assert!(
-        objects[0].version() > 0,
+        objects[0]
+            .object_reference()
+            .expect("Failed to get object reference")
+            .version()
+            > 0,
         "Object should have a valid version"
     );
 
@@ -42,11 +46,19 @@ async fn get_objects_scenarios() {
     );
     for object in &objects {
         assert!(
-            object.version() > 0,
+            object
+                .object_reference()
+                .expect("Failed to get object reference")
+                .version()
+                > 0,
             "Each object should have a valid version"
         );
         assert!(
-            object.data.is_package(),
+            object
+                .object()
+                .expect("Failed to deserialize object")
+                .data
+                .is_package(),
             "System object should be a package"
         );
     }
@@ -64,13 +76,19 @@ async fn get_objects_scenarios() {
         .get_objects(&[(object_id, None)], None)
         .await
         .expect("Failed to get object");
-    let current_version = objects[0].version();
+    let current_version = objects[0]
+        .object_reference()
+        .expect("Failed to get object reference")
+        .version();
     let objects_with_version = client
         .get_objects(&[(object_id, Some(current_version))], None)
         .await
         .expect("Failed to get object with specific version");
     assert_eq!(
-        objects_with_version[0].version(),
+        objects_with_version[0]
+            .object_reference()
+            .expect("Failed to get object reference")
+            .version(),
         current_version,
         "Object version should match requested version"
     );

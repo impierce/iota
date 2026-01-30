@@ -4,7 +4,6 @@
 
 include!("../../../generated/iota.grpc.v0.signatures.rs");
 include!("../../../generated/iota.grpc.v0.signatures.field_info.rs");
-include!("../../../generated/iota.grpc.v0.signatures.accessors.rs");
 
 use crate::{field::FieldMaskTree, merge::Merge, proto::TryFromProtoError, v0::bcs::BcsData};
 
@@ -55,7 +54,7 @@ impl Merge<iota_types::signature::GenericSignature> for UserSignature {
 
         let sdk_signature: iota_sdk_types::UserSignature = source
             .try_into()
-            .map_err(|e| format!("Failed to convert SDK signature: {}", e))?;
+            .map_err(|e| format!("Failed to convert signature: {}", e))?;
 
         Merge::merge(self, sdk_signature, mask)
     }
@@ -107,6 +106,32 @@ impl TryFrom<&UserSignature> for iota_sdk_types::UserSignature {
 // UserSignatures
 //
 
+impl Merge<iota_types::transaction::Transaction> for UserSignatures {
+    fn merge(
+        &mut self,
+        source: iota_types::transaction::Transaction,
+        mask: &FieldMaskTree,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Get signatures directly from transaction without converting the whole
+        // transaction
+        let tx_signatures = source.tx_signatures();
+
+        self.signatures = tx_signatures
+            .iter()
+            .map(|sig| {
+                // Convert iota_types signature to SDK signature, then merge
+                let sdk_sig: iota_sdk_types::UserSignature = sig
+                    .clone()
+                    .try_into()
+                    .map_err(|e| format!("Failed to convert signature: {e}"))?;
+                UserSignature::merge_from(sdk_sig, mask)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(())
+    }
+}
+
 impl Merge<&iota_sdk_types::SignedTransaction> for UserSignatures {
     fn merge(
         &mut self,
@@ -122,5 +147,53 @@ impl Merge<&iota_sdk_types::SignedTransaction> for UserSignatures {
         }
 
         Ok(())
+    }
+}
+
+impl Merge<&UserSignatures> for UserSignatures {
+    fn merge(
+        &mut self,
+        source: &UserSignatures,
+        mask: &FieldMaskTree,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(signatures_mask) = mask.subtree(Self::SIGNATURES_FIELD.name) {
+            self.signatures = source
+                .signatures
+                .iter()
+                .map(|sig| UserSignature::merge_from(sig, &signatures_mask))
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+
+        Ok(())
+    }
+}
+
+// TryFrom implementation for UserSignatures
+impl TryFrom<&UserSignatures> for Vec<iota_sdk_types::UserSignature> {
+    type Error = crate::proto::TryFromProtoError;
+
+    fn try_from(value: &UserSignatures) -> Result<Self, Self::Error> {
+        value
+            .signatures
+            .iter()
+            .enumerate()
+            .map(|(i, sig)| {
+                <&UserSignature as TryInto<iota_sdk_types::UserSignature>>::try_into(sig).map_err(
+                    |e: crate::proto::TryFromProtoError| {
+                        e.nested_at(UserSignatures::SIGNATURES_FIELD.name, i)
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+// Convenience methods for UserSignatures (delegate to TryFrom)
+impl UserSignatures {
+    /// Deserialize all user signatures.
+    pub fn signatures(
+        &self,
+    ) -> Result<Vec<iota_sdk_types::UserSignature>, crate::proto::TryFromProtoError> {
+        self.try_into()
     }
 }

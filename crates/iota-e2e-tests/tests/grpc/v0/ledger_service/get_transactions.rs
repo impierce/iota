@@ -6,18 +6,16 @@ use iota_grpc_types::{
     field::FieldMaskUtil,
     v0::ledger_service::{
         GetTransactionsRequest, GetTransactionsResponse, TransactionRequest, TransactionRequests,
-        ledger_service_client::LedgerServiceClient,
+        ledger_service_client::LedgerServiceClient, transaction_result,
     },
 };
 use iota_macros::sim_test;
 use iota_test_transaction_builder::TestTransactionBuilder;
 use iota_types::digests::TransactionDigest;
 use prost_types::FieldMask;
-use test_cluster::{TestCluster, TestClusterBuilder};
+use test_cluster::TestCluster;
 
-use crate::utils::assert_field_presence;
-
-// Note: impl_field_presence_checker! for ExecutedTransaction is already defined
+use crate::utils::{assert_field_presence, setup_grpc_test};
 
 /// Helper to create a test transaction and return its digest
 async fn create_test_transaction(test_cluster: &TestCluster) -> TransactionDigest {
@@ -43,7 +41,7 @@ async fn create_test_transaction(test_cluster: &TestCluster) -> TransactionDiges
 
 /// Helper function to make GetTransactions requests and validate responses..
 async fn assert_get_transactions_request(
-    client: &mut LedgerServiceClient<tonic::transport::Channel>,
+    ledger_client: &mut LedgerServiceClient<iota_grpc_client::InterceptedChannel>,
     digests: Vec<TransactionDigest>,
     read_mask: Option<FieldMask>,
     max_message_size_bytes: Option<u32>,
@@ -65,7 +63,11 @@ async fn assert_get_transactions_request(
         max_message_size_bytes,
     };
 
-    let mut stream = client.get_transactions(request).await.unwrap().into_inner();
+    let mut stream = ledger_client
+        .get_transactions(request)
+        .await
+        .unwrap()
+        .into_inner();
 
     let mut responses = Vec::new();
     let mut response_count = 0;
@@ -77,7 +79,7 @@ async fn assert_get_transactions_request(
 
         // Assert all returned transactions have the expected fields
         for (idx, tx_result) in response.transactions.iter().enumerate() {
-            if let Some(transaction) = tx_result.transaction_opt() {
+            if let Some(transaction_result::Result::Transaction(transaction)) = &tx_result.result {
                 assert_field_presence(
                     transaction,
                     expected_field_mask_paths,
@@ -120,19 +122,12 @@ async fn assert_get_transactions_request(
 
 #[sim_test]
 async fn get_transactions_readmask_scenarios() {
-    let test_cluster = TestClusterBuilder::new()
-        .with_fullnode_enable_grpc_api(true)
-        .build()
-        .await;
+    let (test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
-    test_cluster.wait_for_checkpoint(1, None).await;
+    let mut ledger_client = client.ledger_service_client();
 
     // Create a test transaction
     let transaction_digest = create_test_transaction(&test_cluster).await;
-
-    let mut client = LedgerServiceClient::connect(test_cluster.grpc_url())
-        .await
-        .unwrap();
 
     // Tests for single-transaction readmask scenarios
     // Note: When a parent field is specified without nested paths (e.g.,
@@ -210,7 +205,7 @@ async fn get_transactions_readmask_scenarios() {
 
     for (scenario, mask, expected_paths) in test_cases {
         let responses = assert_get_transactions_request(
-            &mut client,
+            &mut ledger_client,
             vec![transaction_digest],
             mask,
             None,
@@ -226,12 +221,9 @@ async fn get_transactions_readmask_scenarios() {
 
 #[sim_test]
 async fn get_transactions_batch() {
-    let test_cluster = TestClusterBuilder::new()
-        .with_fullnode_enable_grpc_api(true)
-        .build()
-        .await;
+    let (test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
-    test_cluster.wait_for_checkpoint(1, None).await;
+    let mut ledger_client = client.ledger_service_client();
 
     // Create multiple test transactions
     let mut digests = Vec::new();
@@ -240,14 +232,10 @@ async fn get_transactions_batch() {
         digests.push(digest);
     }
 
-    let mut client = LedgerServiceClient::connect(test_cluster.grpc_url())
-        .await
-        .unwrap();
-
     // Test batch request with partial readmask
     // Note: "effects" without nested paths means all nested fields are included
     let responses = assert_get_transactions_request(
-        &mut client,
+        &mut ledger_client,
         digests.clone(),
         Some(FieldMask::from_paths(["transaction.digest", "effects"])),
         None,
@@ -265,12 +253,9 @@ async fn get_transactions_batch() {
 
 #[sim_test]
 async fn get_transactions_streaming() {
-    let test_cluster = TestClusterBuilder::new()
-        .with_fullnode_enable_grpc_api(true)
-        .build()
-        .await;
+    let (test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
-    test_cluster.wait_for_checkpoint(1, None).await;
+    let mut ledger_client = client.ledger_service_client();
 
     // Create multiple test transactions to have enough data for streaming
     let mut digests = Vec::new();
@@ -278,10 +263,6 @@ async fn get_transactions_streaming() {
         let digest = create_test_transaction(&test_cluster).await;
         digests.push(digest);
     }
-
-    let mut client = LedgerServiceClient::connect(test_cluster.grpc_url())
-        .await
-        .unwrap();
 
     // Request each transaction multiple times to create larger payload
     let mut all_digests = Vec::new();
@@ -295,7 +276,7 @@ async fn get_transactions_streaming() {
     // Note: Parent fields without nested paths are wildcards that include all
     // nested fields
     let responses = assert_get_transactions_request(
-        &mut client,
+        &mut ledger_client,
         all_digests,
         Some(FieldMask::from_paths([
             "transaction",
@@ -339,19 +320,20 @@ async fn get_transactions_streaming() {
 
 #[sim_test]
 async fn get_transactions_empty_request() {
-    let test_cluster = TestClusterBuilder::new()
-        .with_fullnode_enable_grpc_api(true)
-        .build()
-        .await;
+    let (_test_cluster, client) = setup_grpc_test(None, None).await;
 
-    let mut client = LedgerServiceClient::connect(test_cluster.grpc_url())
-        .await
-        .unwrap();
+    let mut ledger_client = client.ledger_service_client();
 
     // Test empty request list
-    let responses =
-        assert_get_transactions_request(&mut client, vec![], None, None, &[], "empty request")
-            .await;
+    let responses = assert_get_transactions_request(
+        &mut ledger_client,
+        vec![],
+        None,
+        None,
+        &[],
+        "empty request",
+    )
+    .await;
 
     // Should return single response with 0 transactions
     assert_eq!(responses.len(), 1, "Should have 1 response");
@@ -368,14 +350,9 @@ async fn get_transactions_empty_request() {
 
 #[sim_test]
 async fn get_transactions_nonexistent() {
-    let test_cluster = TestClusterBuilder::new()
-        .with_fullnode_enable_grpc_api(true)
-        .build()
-        .await;
+    let (_test_cluster, client) = setup_grpc_test(None, None).await;
 
-    let mut client = LedgerServiceClient::connect(test_cluster.grpc_url())
-        .await
-        .unwrap();
+    let mut ledger_client = client.ledger_service_client();
 
     // Request non-existent transactions
     let fake_digest1 = TransactionDigest::new([0u8; 32]);
@@ -400,7 +377,11 @@ async fn get_transactions_nonexistent() {
         max_message_size_bytes: None,
     };
 
-    let mut stream = client.get_transactions(request).await.unwrap().into_inner();
+    let mut stream = ledger_client
+        .get_transactions(request)
+        .await
+        .unwrap()
+        .into_inner();
 
     let mut responses = Vec::new();
     while let Some(response) = stream.next().await {
@@ -417,21 +398,25 @@ async fn get_transactions_nonexistent() {
     for response in &responses {
         for tx_result in &response.transactions {
             assert!(
-                tx_result.error_opt().is_some(),
+                matches!(tx_result.result, Some(transaction_result::Result::Error(_))),
                 "Expected error for non-existent transaction"
             );
             assert!(
-                tx_result.transaction_opt().is_none(),
+                !matches!(
+                    tx_result.result,
+                    Some(transaction_result::Result::Transaction(_))
+                ),
                 "Expected no transaction for non-existent digest"
             );
 
-            let error = tx_result.error_opt().unwrap();
-            // Verify error code is NOT_FOUND (5)
-            assert_eq!(
-                error.code, 5,
-                "Error code should be NOT_FOUND (5), got: {}",
-                error.code
-            );
+            if let Some(transaction_result::Result::Error(error)) = &tx_result.result {
+                // Verify error code is NOT_FOUND (5)
+                assert_eq!(
+                    error.code, 5,
+                    "Error code should be NOT_FOUND (5), got: {}",
+                    error.code
+                );
+            }
             error_count += 1;
         }
     }
@@ -441,19 +426,12 @@ async fn get_transactions_nonexistent() {
 
 #[sim_test]
 async fn get_transactions_mixed_valid_invalid() {
-    let test_cluster = TestClusterBuilder::new()
-        .with_fullnode_enable_grpc_api(true)
-        .build()
-        .await;
+    let (test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
-    test_cluster.wait_for_checkpoint(1, None).await;
+    let mut ledger_client = client.ledger_service_client();
 
     // Create a real transaction
     let real_digest = create_test_transaction(&test_cluster).await;
-
-    let mut client = LedgerServiceClient::connect(test_cluster.grpc_url())
-        .await
-        .unwrap();
 
     // Request mix of valid and invalid digests
     let fake_digest = TransactionDigest::new([0u8; 32]);
@@ -479,7 +457,11 @@ async fn get_transactions_mixed_valid_invalid() {
         max_message_size_bytes: None,
     };
 
-    let mut stream = client.get_transactions(request).await.unwrap().into_inner();
+    let mut stream = ledger_client
+        .get_transactions(request)
+        .await
+        .unwrap()
+        .into_inner();
 
     let mut all_results = Vec::new();
     while let Some(response) = stream.next().await {
@@ -498,29 +480,42 @@ async fn get_transactions_mixed_valid_invalid() {
 
     // First result should be a transaction (valid digest)
     assert!(
-        all_results[0].transaction_opt().is_some(),
+        matches!(
+            all_results[0].result,
+            Some(transaction_result::Result::Transaction(_))
+        ),
         "First result should be a valid transaction"
     );
     assert!(
-        all_results[0].error_opt().is_none(),
+        !matches!(
+            all_results[0].result,
+            Some(transaction_result::Result::Error(_))
+        ),
         "First result should not have an error"
     );
 
     // Second result should be an error (invalid digest)
     assert!(
-        all_results[1].error_opt().is_some(),
+        matches!(
+            all_results[1].result,
+            Some(transaction_result::Result::Error(_))
+        ),
         "Second result should be an error"
     );
     assert!(
-        all_results[1].transaction_opt().is_none(),
+        !matches!(
+            all_results[1].result,
+            Some(transaction_result::Result::Transaction(_))
+        ),
         "Second result should not have a transaction"
     );
 
     // Verify error code is NOT_FOUND
-    let error = all_results[1].error_opt().unwrap();
-    assert_eq!(
-        error.code, 5,
-        "Error code should be NOT_FOUND (5), got: {}",
-        error.code
-    );
+    if let Some(transaction_result::Result::Error(error)) = &all_results[1].result {
+        assert_eq!(
+            error.code, 5,
+            "Error code should be NOT_FOUND (5), got: {}",
+            error.code
+        );
+    }
 }

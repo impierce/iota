@@ -3,77 +3,99 @@
 
 //! High-level API for gRPC client operations.
 //!
-//! This module provides ergonomic wrappers around the raw gRPC service clients,
-//! allowing users to work with SDK types directly without dealing with proto
-//! types.
+//! This module provides wrappers around the raw gRPC service clients.
+//! Proto types are exposed directly with lazy conversion methods, allowing
+//! users to convert only what they need to SDK types.
 
-use iota_sdk_types::{
-    CheckpointSequenceNumber, Digest, Object, Transaction, TransactionEffects, TransactionEvents,
-    UserSignature,
-};
+use iota_sdk_types::CheckpointSequenceNumber;
 
 mod common;
 pub mod execution;
 pub mod ledger;
 
 pub use common::{
-    EXECUTION_READ_MASK, Error, OBJECTS_READ_MASK, Result, TRANSACTIONS_READ_MASK,
-    TransactionExecutionResponse,
+    CHECKPOINT_READ_MASK, EXECUTION_READ_MASK, Error, OBJECTS_READ_MASK, Result,
+    TRANSACTIONS_READ_MASK,
 };
 pub(crate) use common::{
-    ProtoResult, TryFromProtoError, build_proto_transaction, convert_object,
-    extract_effects_and_events, extract_execution_response, field_mask_with_default,
+    ProtoResult, TryFromProtoError, build_proto_transaction, field_mask_with_default,
+};
+// Re-export proto types as the primary API
+pub use iota_grpc_types::v0::{
+    checkpoint::Checkpoint,
+    event::Event,
+    object::{Object, Objects},
+    transaction::{ExecutedTransaction, Transaction, TransactionEffects, TransactionEvents},
 };
 
-/// Response for a transaction query.
+/// Response for a checkpoint query.
 ///
-/// Contains the transaction data, signatures, effects, and optional events.
+/// Contains checkpoint summary, signature, contents, transactions, and events.
+/// Fields are proto types that can be lazily converted to SDK types using their
+/// conversion methods (e.g., `response.summary()?`, `response.effects()?`).
 #[derive(Debug, Clone)]
-pub struct TransactionResponse {
-    /// Transaction digest.
-    pub digest: Digest,
-    /// The transaction data.
-    pub transaction: Transaction,
-    /// User signatures on the transaction.
-    pub signatures: Vec<UserSignature>,
-    /// The effects of executing this transaction.
-    pub effects: TransactionEffects,
-    /// Events emitted during execution (if available).
-    pub events: Option<TransactionEvents>,
-    /// Checkpoint that includes this transaction (if finalized).
-    pub checkpoint: Option<CheckpointSequenceNumber>,
-    /// Timestamp in milliseconds when the transaction was executed (if
-    /// available).
-    pub timestamp_ms: Option<u64>,
+pub struct CheckpointResponse {
+    /// The checkpoint sequence number.
+    pub sequence_number: CheckpointSequenceNumber,
+    /// Proto checkpoint summary. Use `summary.summary()` to convert to SDK
+    /// type.
+    pub summary: Option<iota_grpc_types::v0::checkpoint::CheckpointSummary>,
+    /// Proto validator signature. Use TryInto or
+    /// ValidatorAggregatedSignature::try_from to convert.
+    pub signature: Option<iota_grpc_types::v0::signatures::ValidatorAggregatedSignature>,
+    /// Proto checkpoint contents. Use `contents.contents()` to convert to
+    /// SDK type.
+    pub contents: Option<iota_grpc_types::v0::checkpoint::CheckpointContents>,
+    /// Proto executed transactions. Use methods like `tx.effects()?`,
+    /// `tx.transaction()?`, etc.
+    pub transactions: Vec<ExecutedTransaction>,
+    /// Proto events. Use `event.events()` to convert to SDK type.
+    pub events: Vec<Event>,
 }
 
-/// Response for transaction simulation.
-///
-/// Contains the simulated effects, events, and objects.
-///
-/// Unlike [`TransactionExecutionResponse`], simulation always returns input and
-/// output objects (as `Vec<Object>` rather than `Option<Vec<Object>>`) because
-/// previewing object changes is the primary purpose of simulation.
-#[derive(Debug, Clone)]
-pub struct TransactionSimulationResponse {
-    /// The simulated effects.
-    pub effects: TransactionEffects,
-    /// Events that would be emitted.
-    pub events: Option<TransactionEvents>,
-    /// Input objects used by the transaction (always populated for simulation).
-    pub input_objects: Vec<Object>,
-    /// Output objects that would be created/modified (always populated for
-    /// simulation).
-    pub output_objects: Vec<Object>,
-}
+impl CheckpointResponse {
+    pub fn sequence_number(&self) -> CheckpointSequenceNumber {
+        self.sequence_number
+    }
 
-impl From<TransactionExecutionResponse> for TransactionSimulationResponse {
-    fn from(data: TransactionExecutionResponse) -> Self {
-        Self {
-            effects: data.effects,
-            events: data.events,
-            input_objects: data.input_objects.unwrap_or_default(),
-            output_objects: data.output_objects.unwrap_or_default(),
-        }
+    pub fn summary(&self) -> Result<iota_sdk_types::checkpoint::CheckpointSummary> {
+        self.summary
+            .as_ref()
+            .ok_or_else(|| TryFromProtoError::missing("summary"))?
+            .try_into()
+            .map_err(Into::into)
+    }
+
+    pub fn signature(&self) -> Result<iota_sdk_types::ValidatorAggregatedSignature> {
+        self.signature
+            .as_ref()
+            .ok_or_else(|| TryFromProtoError::missing("signature"))?
+            .try_into()
+            .map_err(Into::into)
+    }
+
+    pub fn contents(&self) -> Result<iota_sdk_types::checkpoint::CheckpointContents> {
+        self.contents
+            .as_ref()
+            .ok_or_else(|| TryFromProtoError::missing("contents"))?
+            .try_into()
+            .map_err(Into::into)
+    }
+
+    pub fn transactions(&self) -> Result<Vec<&ExecutedTransaction>> {
+        Ok(self.transactions.iter().collect())
+    }
+
+    pub fn events(&self) -> Result<Vec<iota_sdk_types::Event>> {
+        self.events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                e.try_into().map_err(|e: TryFromProtoError| {
+                    e.nested_at(iota_grpc_types::v0::event::Events::EVENTS_FIELD.name, i)
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 }
