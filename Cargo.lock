@@ -6838,6 +6838,7 @@ dependencies = [
  "moka",
  "move-binary-format",
  "move-core-types",
+ "object_store 0.13.1",
  "prometheus",
  "rand 0.8.5",
  "reqwest",
