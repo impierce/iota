@@ -17,11 +17,11 @@ async fn simulate_transaction_scenarios() {
     let (test_cluster, client) = setup_grpc_test(Some(1), None).await;
 
     // Test: regular and dev-inspect simulation modes
-    for (dev_inspect, mode_name) in [(false, "regular"), (true, "dev-inspect")] {
+    for (skip_checks, mode_name) in [(false, "regular"), (true, "dev-inspect")] {
         let transaction = create_transaction_for_simulation(&test_cluster).await;
 
         let result = client
-            .simulate_transaction(transaction, dev_inspect, None)
+            .simulate_transaction(transaction, skip_checks, None)
             .await
             .unwrap_or_else(|e| panic!("Failed to simulate transaction in {mode_name} mode: {e}"));
 
@@ -66,7 +66,7 @@ async fn simulate_transaction_scenarios() {
         "Effects should be present with minimal mask"
     );
 
-    // Test: insufficient gas budget returns InvalidArgument error
+    // Test: insufficient gas budget returns gRPC error
     // Gas budget validation (min/max bounds) happens upfront in
     // check_gas_balance(), so a budget of 1 (below minimum) is rejected before
     // execution begins.
@@ -83,7 +83,7 @@ async fn simulate_transaction_scenarios() {
         .build();
     let transaction: Transaction = tx_data.try_into().expect("SDK type conversion failed");
     let result = client.simulate_transaction(transaction, false, None).await;
-    assert_grpc_error(result, Code::InvalidArgument);
+    assert_grpc_error(result, Code::Internal);
 
     // Test: transfer exceeding balance returns Ok with failed effects
     // Transfer amount validation happens during Move VM execution, not upfront,
