@@ -10,8 +10,9 @@ use iota_metrics::RegistryService;
 use iota_network::{api::VALIDATOR_METHOD_PATHS, tonic::Code};
 use iota_network_stack::metrics::MetricsCallbackProvider;
 use prometheus::{
-    HistogramVec, IntCounterVec, IntGaugeVec, Registry, register_histogram_vec_with_registry,
-    register_int_counter_vec_with_registry, register_int_gauge_vec_with_registry,
+    HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry,
+    register_histogram_vec_with_registry, register_int_counter_vec_with_registry,
+    register_int_gauge_vec_with_registry, register_int_gauge_with_registry,
 };
 
 /// Starts a task to periodically push metrics to a configured endpoint if a
@@ -75,6 +76,10 @@ pub struct IotaNodeMetrics {
     pub total_jwks: IntCounterVec,
     pub invalid_jwks: IntCounterVec,
     pub unique_jwks: IntCounterVec,
+
+    pub current_protocol_version: IntGauge,
+    pub binary_max_protocol_version: IntGauge,
+    pub configured_max_protocol_version: IntGauge,
 }
 
 impl IotaNodeMetrics {
@@ -112,6 +117,24 @@ impl IotaNodeMetrics {
                 "unique_jwks",
                 "Total number of unique JWKs",
                 &["provider"],
+                registry,
+            )
+            .unwrap(),
+            current_protocol_version: register_int_gauge_with_registry!(
+                "iota_current_protocol_version",
+                "Current protocol version in this epoch",
+                registry,
+            )
+            .unwrap(),
+            binary_max_protocol_version: register_int_gauge_with_registry!(
+                "iota_binary_max_protocol_version",
+                "Max protocol version supported by this binary",
+                registry,
+            )
+            .unwrap(),
+            configured_max_protocol_version: register_int_gauge_with_registry!(
+                "iota_configured_max_protocol_version",
+                "Max protocol version configured in the node config",
                 registry,
             )
             .unwrap(),
