@@ -48,7 +48,7 @@
 //! The above design is used for both objects and markers.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     hash::Hash,
     sync::{Arc, atomic::AtomicU64},
 };
@@ -69,12 +69,11 @@ use iota_types::{
     message_envelope::Message,
     messages_checkpoint::CheckpointSequenceNumber,
     object::Object,
-    storage::{MarkerValue, ObjectKey, ObjectOrTombstone, ObjectStore, PackageObject},
+    storage::{InputKey, MarkerValue, ObjectKey, ObjectOrTombstone, ObjectStore, PackageObject},
     transaction::{VerifiedSignedTransaction, VerifiedTransaction},
 };
 use moka::sync::SegmentedCache as MokaCache;
 use parking_lot::Mutex;
-use prometheus::Registry;
 use tap::TapOptional;
 use tracing::{debug, info, instrument, trace, warn};
 
@@ -438,6 +437,7 @@ pub struct WritebackCache {
     object_locks: ObjectLocks,
 
     executed_effects_digests_notify_read: NotifyRead<TransactionDigest, TransactionEffectsDigest>,
+    object_notify_read: NotifyRead<InputKey, ()>,
     store: Arc<AuthorityStore>,
     backpressure_threshold: u64,
     backpressure_manager: Arc<BackpressureManager>,
@@ -499,6 +499,7 @@ impl WritebackCache {
             packages,
             object_locks: ObjectLocks::new(),
             executed_effects_digests_notify_read: NotifyRead::new(),
+            object_notify_read: NotifyRead::new(),
             store,
             backpressure_manager,
             backpressure_threshold: config.backpressure_threshold(),
@@ -506,11 +507,11 @@ impl WritebackCache {
         }
     }
 
-    pub fn new_for_tests(store: Arc<AuthorityStore>, registry: &Registry) -> Self {
+    pub fn new_for_tests(store: Arc<AuthorityStore>) -> Self {
         Self::new(
             &Default::default(),
             store,
-            ExecutionCacheMetrics::new(registry).into(),
+            ExecutionCacheMetrics::new(&prometheus::Registry::new()).into(),
             BackpressureManager::new_for_tests(),
         )
     }
@@ -571,7 +572,11 @@ impl WritebackCache {
             // See the comment in `MonotonicCache::insert`.
             .ok();
 
-        entry.insert(version, object);
+        entry.insert(version, object.clone());
+
+        if let ObjectEntry::Object(object) = &object {
+            super::notify_object_written(&self.object_notify_read, object);
+        }
     }
 
     fn write_marker_value(
@@ -593,6 +598,12 @@ impl WritebackCache {
             .or_default()
             .value_mut()
             .insert(object_key.1, marker_value);
+
+        // It is possible for a transaction to use a shared
+        // object in the input, hence we must notify that it is now available
+        // at the assigned version, so that any transaction waiting for this
+        // object version can start execution.
+        super::notify_marker_written(&self.object_notify_read, object_key, &marker_value);
     }
 
     // lock both the dirty and committed sides of the cache, and then pass the
@@ -1825,6 +1836,21 @@ impl ObjectCacheRead for WritebackCache {
             .get_highest_pruned_checkpoint()
             .map_err(IotaError::from)
     }
+
+    fn notify_read_input_objects<'a>(
+        &'a self,
+        input_and_receiving_keys: &'a [InputKey],
+        receiving_keys: &'a HashSet<InputKey>,
+        epoch: &'a EpochId,
+    ) -> BoxFuture<'a, Vec<()>> {
+        super::notify_read_input_objects_impl(
+            &self.object_notify_read,
+            self,
+            input_and_receiving_keys,
+            receiving_keys,
+            epoch,
+        )
+    }
 }
 
 impl TransactionCacheRead for WritebackCache {
@@ -2264,5 +2290,23 @@ impl StateSyncAPI for WritebackCache {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl WritebackCache {
+    pub(super) fn write_object_for_testing(&self, object: Object) {
+        let id = object.id();
+        let version = object.version();
+        self.write_object_entry(&id, version, ObjectEntry::Object(object));
+    }
+
+    pub(super) fn write_marker_for_testing(
+        &self,
+        epoch_id: EpochId,
+        object_key: &ObjectKey,
+        marker_value: MarkerValue,
+    ) {
+        self.write_marker_value(epoch_id, object_key, marker_value);
     }
 }
