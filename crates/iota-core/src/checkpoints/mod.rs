@@ -1478,12 +1478,16 @@ impl CheckpointBuilder {
                 let (transaction, size) = transaction_and_size
                     .unwrap_or_else(|| panic!("Could not find executed transaction {effects:?}"));
                 match transaction.inner().transaction_data().kind() {
+                    #[allow(deprecated)]
                     TransactionKind::ConsensusCommitPrologueV1(_)
-                    | TransactionKind::AuthenticatorStateUpdateV1(_) => {
-                        // ConsensusCommitPrologue and
-                        // AuthenticatorStateUpdateV1
-                        // are guaranteed to be
+                    | TransactionKind::AuthenticatorStateUpdateV1Deprecated => {
+                        // ConsensusCommitPrologue is guaranteed to be
                         // processed before we reach here.
+                        //
+                        // Deprecated: Authenticator state (JWK) is deprecated
+                        // and was never enabled.
+                        // These transaction kinds are retained
+                        // only for BCS enum variant compatibility.
                     }
                     TransactionKind::RandomnessStateUpdate(rsu) => {
                         randomness_rounds
