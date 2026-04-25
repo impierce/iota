@@ -16,7 +16,6 @@ use fastcrypto_tbls::dkg_v1;
 use iota_protocol_config::ProtocolConfig;
 use iota_sdk_types::crypto::IntentScope;
 use once_cell::sync::OnceCell;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -39,7 +38,7 @@ pub type TimestampMs = u64;
 
 /// Uses an enum to allow for future expansion of the
 /// ConsensusDeterminedVersionAssignments.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub enum ConsensusDeterminedVersionAssignments {
     // Cancelled transaction version assignment.
     CancelledTransactions(Vec<(TransactionDigest, Vec<(ObjectID, SequenceNumber)>)>),

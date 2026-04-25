@@ -48,7 +48,6 @@ use rand::{
     rngs::{OsRng, StdRng},
 };
 use roaring::RoaringBitmap;
-use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, ser::Serializer};
 use serde_with::{Bytes, serde_as};
 use strum::EnumString;
@@ -289,7 +288,7 @@ impl<'de> Deserialize<'de> for IotaKeyPair {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, JsonSchema, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublicKey {
     Ed25519(Ed25519PublicKeyAsBytes),
     Secp256k1(Secp256k1PublicKeyAsBytes),
@@ -395,24 +394,10 @@ impl PublicKey {
 /// Defines the compressed version of the public key that we pass around
 /// in IOTA.
 #[serde_as]
-#[derive(
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-    AsRef,
-)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, AsRef)]
 #[as_ref(forward)]
 pub struct AuthorityPublicKeyBytes(
-    #[schemars(with = "Base64")]
-    #[serde_as(as = "Readable<Base64, Bytes>")]
-    pub [u8; AuthorityPublicKey::LENGTH],
+    #[serde_as(as = "Readable<Base64, Bytes>")] pub [u8; AuthorityPublicKey::LENGTH],
 );
 
 impl AuthorityPublicKeyBytes {
@@ -457,7 +442,7 @@ impl Display for ConciseAuthorityPublicKeyBytesRef<'_> {
 }
 
 /// A wrapper around AuthorityPublicKeyBytes but owns it.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConciseAuthorityPublicKeyBytes(AuthorityPublicKeyBytes);
 
 impl Debug for ConciseAuthorityPublicKeyBytes {
@@ -680,7 +665,7 @@ where
 
 // Enums for signature scheme signatures
 #[enum_dispatch]
-#[derive(Clone, JsonSchema, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Signature {
     Ed25519IotaSignature,
     Secp256k1IotaSignature,
@@ -794,11 +779,10 @@ impl IotaPublicKey for BLS12381PublicKey {
 //
 
 #[serde_as]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, AsRef, AsMut)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef, AsMut)]
 #[as_ref(forward)]
 #[as_mut(forward)]
 pub struct Ed25519IotaSignature(
-    #[schemars(with = "Base64")]
     #[serde_as(as = "Readable<Base64, Bytes>")]
     [u8; Ed25519PublicKey::LENGTH + Ed25519Signature::LENGTH + 1],
 );
@@ -841,11 +825,10 @@ impl Signer<Signature> for Ed25519KeyPair {
 // Secp256k1 Iota Signature port
 //
 #[serde_as]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, AsRef, AsMut)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef, AsMut)]
 #[as_ref(forward)]
 #[as_mut(forward)]
 pub struct Secp256k1IotaSignature(
-    #[schemars(with = "Base64")]
     #[serde_as(as = "Readable<Base64, Bytes>")]
     [u8; Secp256k1PublicKey::LENGTH + Secp256k1Signature::LENGTH + 1],
 );
@@ -881,11 +864,10 @@ impl Signer<Signature> for Secp256k1KeyPair {
 // Secp256r1 Iota Signature port
 //
 #[serde_as]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, AsRef, AsMut)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, AsRef, AsMut)]
 #[as_ref(forward)]
 #[as_mut(forward)]
 pub struct Secp256r1IotaSignature(
-    #[schemars(with = "Base64")]
     #[serde_as(as = "Readable<Base64, Bytes>")]
     [u8; Secp256r1PublicKey::LENGTH + Secp256r1Signature::LENGTH + 1],
 );
@@ -1183,12 +1165,10 @@ impl PartialEq for AuthoritySignInfo {
 /// STRONG_THRESHOLD is false, the quorum is valid when the total stake is at
 /// least the validity threshold (f+1) of the committee.
 #[serde_as]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuthorityQuorumSignInfo<const STRONG_THRESHOLD: bool> {
     pub epoch: EpochId,
-    #[schemars(with = "Base64")]
     pub signature: AggregateAuthoritySignature,
-    #[schemars(with = "Base64")]
     #[serde_as(as = "IotaBitmap")]
     pub signers_map: RoaringBitmap,
 }
@@ -1198,11 +1178,10 @@ pub type AuthorityStrongQuorumSignInfo = AuthorityQuorumSignInfo<true>;
 // Variant of [AuthorityStrongQuorumSignInfo] but with a serialized signature,
 // to be used in external APIs.
 #[serde_as]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IotaAuthorityStrongQuorumSignInfo {
     pub epoch: EpochId,
     pub signature: AggregateAuthoritySignatureAsBytes,
-    #[schemars(with = "Base64")]
     #[serde_as(as = "IotaBitmap")]
     pub signers_map: RoaringBitmap,
 }
@@ -1682,16 +1661,7 @@ pub mod bcs_signable_test {
 
 #[iota_proc_macros::allow_deprecated_for_derives]
 #[derive(
-    Clone,
-    Copy,
-    Deserialize,
-    Serialize,
-    JsonSchema,
-    Debug,
-    EnumString,
-    strum_macros::Display,
-    PartialEq,
-    Eq,
+    Clone, Copy, Deserialize, Serialize, Debug, EnumString, strum_macros::Display, PartialEq, Eq,
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum SignatureScheme {
@@ -1755,7 +1725,7 @@ impl SignatureScheme {
 }
 /// Unlike [enum Signature], [enum CompressedSignature] does not contain public
 /// key.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CompressedSignature {
     Ed25519(Ed25519SignatureAsBytes),
     Secp256k1(Secp256k1SignatureAsBytes),
@@ -1766,11 +1736,11 @@ pub enum CompressedSignature {
     Move(MoveAuthenticatorAsBytes),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-pub struct PasskeyAuthenticatorAsBytes(#[schemars(with = "Base64")] pub Vec<u8>);
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PasskeyAuthenticatorAsBytes(pub Vec<u8>);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-pub struct MoveAuthenticatorAsBytes(#[schemars(with = "Base64")] pub Vec<u8>);
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MoveAuthenticatorAsBytes(pub Vec<u8>);
 
 impl AsRef<[u8]> for CompressedSignature {
     fn as_ref(&self) -> &[u8] {

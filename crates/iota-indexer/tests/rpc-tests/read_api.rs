@@ -13,11 +13,10 @@ use iota_indexer::{
 use iota_json::{IotaJsonValue, call_args, type_args};
 use iota_json_rpc_api::{IndexerApiClient, ReadApiClient, TransactionBuilderClient};
 use iota_json_rpc_types::{
-    CheckpointId, IotaGetPastObjectRequest, IotaObjectDataOptions, IotaObjectRef,
-    IotaObjectResponse, IotaObjectResponseQuery, IotaPastObjectResponse,
-    IotaTransactionBlockEffectsAPI, IotaTransactionBlockResponse,
-    IotaTransactionBlockResponseOptions, IotaTransactionBlockResponseQueryV2, ObjectChange,
-    TransactionFilterV2,
+    CheckpointId, IotaGetPastObjectRequest, IotaObjectDataOptions, IotaObjectResponse,
+    IotaObjectResponseQuery, IotaPastObjectResponse, IotaTransactionBlockEffectsAPI,
+    IotaTransactionBlockResponse, IotaTransactionBlockResponseOptions,
+    IotaTransactionBlockResponseQueryV2, ObjectChange, TransactionFilterV2,
 };
 use iota_package_resolver::Resolver;
 use iota_protocol_config::ProtocolVersion;
@@ -26,7 +25,7 @@ use iota_test_transaction_builder::{
     publish_simple_warrior_package,
 };
 use iota_types::{
-    base_types::{ObjectID, SequenceNumber},
+    base_types::{ObjectID, ObjectRef, SequenceNumber},
     crypto::{AccountKeyPair, IotaKeyPair, get_key_pair},
     digests::{ChainIdentifier, ObjectDigest, TransactionDigest},
     error::IotaObjectResponseError,
@@ -1661,11 +1660,11 @@ fn try_get_past_object_object_deleted() {
 
         assert_eq!(
             result,
-            IotaPastObjectResponse::ObjectDeleted(IotaObjectRef {
-                object_id: nft_object_ref.0,
-                version: deleted_version,
-                digest: ObjectDigest::OBJECT_DIGEST_DELETED,
-            }),
+            IotaPastObjectResponse::ObjectDeleted((
+                nft_object_ref.0,
+                deleted_version,
+                ObjectDigest::OBJECT_DIGEST_DELETED,
+            )),
             "mismatch in ObjectDeleted response"
         );
 
@@ -1677,11 +1676,11 @@ fn try_get_past_object_object_deleted() {
 
         assert_eq!(
             result,
-            IotaPastObjectResponse::ObjectDeleted(IotaObjectRef {
-                object_id: nft_object_ref.0,
-                version: deleted_version,
-                digest: ObjectDigest::OBJECT_DIGEST_DELETED,
-            }),
+            IotaPastObjectResponse::ObjectDeleted((
+                nft_object_ref.0,
+                deleted_version,
+                ObjectDigest::OBJECT_DIGEST_DELETED,
+            )),
             "mismatch in ObjectDeleted response"
         );
 
@@ -2077,10 +2076,10 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
             .unwrap()
             .created()
             .iter()
-            .map(|sword| sword.reference.clone())
-            .collect::<Vec<IotaObjectRef>>();
+            .map(|sword| sword.reference)
+            .collect::<Vec<ObjectRef>>();
 
-        let sword_object_ref = sword_object_ref
+        let sword_object_ref = *sword_object_ref
             .first()
             .expect("expected at least one created object");
 
@@ -2090,7 +2089,7 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
 
             let sword_object_ref_arg = builder
                 .input(CallArg::Object(ObjectArg::ImmOrOwnedObject(
-                    sword_object_ref.to_object_ref(),
+                    sword_object_ref,
                 )))
                 .expect("valid pure");
 
@@ -2132,7 +2131,7 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
             .unwrap()
             .wrapped()
             .iter()
-            .map(|wrapped| wrapped.object_id)
+            .map(|wrapped| wrapped.0)
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -2168,10 +2167,10 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
             .unwrap()
             .created()
             .iter()
-            .map(|warrior| warrior.reference.clone())
-            .collect::<Vec<IotaObjectRef>>();
+            .map(|warrior| warrior.reference)
+            .collect::<Vec<ObjectRef>>();
 
-        let warrior_object_ref = warrior_object_ref
+        let warrior_object_ref = *warrior_object_ref
             .first()
             .expect("expected at least one created object for warrior");
 
@@ -2180,7 +2179,7 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
 
             let warrior_object_ref_arg = builder
                 .input(CallArg::Object(ObjectArg::ImmOrOwnedObject(
-                    warrior_object_ref.to_object_ref(),
+                    warrior_object_ref,
                 )))
                 .unwrap();
 
@@ -2222,7 +2221,7 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
             .unwrap()
             .unwrapped_then_deleted()
             .iter()
-            .map(|sword| sword.object_id)
+            .map(|sword| sword.0)
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -2269,9 +2268,7 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
         );
 
         // Delete the `Warrior` object
-        let warrior_object_ref = cluster
-            .get_latest_object_ref(&warrior_object_ref.object_id)
-            .await;
+        let warrior_object_ref = cluster.get_latest_object_ref(&warrior_object_ref.0).await;
 
         let pt = {
             let mut builder = ProgrammableTransactionBuilder::new();
@@ -2309,7 +2306,7 @@ fn find_transaction_for_wrapped_or_deleted_object() -> Result<(), anyhow::Error>
             .unwrap()
             .deleted()
             .iter()
-            .map(|deleted| deleted.object_id)
+            .map(|deleted| deleted.0)
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -2436,7 +2433,7 @@ fn find_transaction_for_create_and_wrap_same_ptb() -> Result<(), anyhow::Error> 
             "expected exactly one created object"
         );
 
-        let warrior_object_id = created_objects[0].reference.object_id;
+        let warrior_object_id = created_objects[0].reference.0;
 
         // 5) Unwrap the Sword to find out it's object ID
         let warrior_object_ref = cluster.get_latest_object_ref(&warrior_object_id).await;
@@ -2482,8 +2479,8 @@ fn find_transaction_for_create_and_wrap_same_ptb() -> Result<(), anyhow::Error> 
             .unwrap()
             .unwrapped()
             .iter()
-            .map(|sword| sword.reference.clone())
-            .collect::<Vec<IotaObjectRef>>();
+            .map(|sword| sword.reference)
+            .collect::<Vec<ObjectRef>>();
 
         assert_eq!(
             sword_object_ref.len(),
@@ -2495,7 +2492,7 @@ fn find_transaction_for_create_and_wrap_same_ptb() -> Result<(), anyhow::Error> 
             .query_transaction_blocks_v2(
                 IotaTransactionBlockResponseQueryV2 {
                     filter: Some(TransactionFilterV2::WrappedOrDeletedObject(
-                        sword_object_ref[0].object_id,
+                        sword_object_ref[0].0,
                     )),
                     options: Some(IotaTransactionBlockResponseOptions::full_content()),
                 },
@@ -2627,7 +2624,7 @@ fn get_transaction_block_with_unwrapped_object_changes() -> Result<(), anyhow::E
             .first()
             .expect("expected created object")
             .reference
-            .object_id;
+            .0;
 
         let unwrap_res = execute_move_call(
             client,
